@@ -47,6 +47,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache Rust
+        if: runner.os != 'Windows'
         uses: Swatinem/rust-cache@v2
 
       - name: Install cross
