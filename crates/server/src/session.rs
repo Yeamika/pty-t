@@ -1,0 +1,367 @@
+use anyhow::{anyhow, Result};
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use pty_t_demo::protocol::{clamp_size, SessionSummary};
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use tokio::sync::mpsc;
+use tokio_tungstenite::tungstenite::Message;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TermSize {
+    pub cols: u16,
+    pub rows: u16,
+}
+
+pub struct ClientInfo {
+    token: u64,
+    pub tx: mpsc::UnboundedSender<Message>,
+    size: TermSize,
+}
+
+impl ClientInfo {
+    pub fn new(token: u64, tx: mpsc::UnboundedSender<Message>, size: TermSize) -> Self {
+        Self { token, tx, size }
+    }
+
+    pub fn token(&self) -> u64 {
+        self.token
+    }
+
+    pub fn size(&self) -> TermSize {
+        self.size
+    }
+
+    pub fn set_size(&mut self, size: TermSize) {
+        self.size = size;
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CommandSpec {
+    pub program: String,
+    pub args: Vec<String>,
+}
+
+impl CommandSpec {
+    pub fn argv(&self) -> Vec<String> {
+        let mut argv = vec![self.program.clone()];
+        argv.extend(self.args.clone());
+        argv
+    }
+}
+
+pub struct Session {
+    name: String,
+    command: Vec<String>,
+    master: Mutex<Box<dyn MasterPty + Send>>,
+    writer: Mutex<Box<dyn Write + Send>>,
+    child: Mutex<Box<dyn Child + Send + Sync>>,
+    clients: Mutex<HashMap<String, ClientInfo>>,
+    controller: Mutex<Option<String>>,
+    parser: Mutex<vt100::Parser>,
+    size: Mutex<TermSize>,
+}
+
+impl Session {
+    pub fn new(name: String, command: CommandSpec, cols: u16, rows: u16) -> Result<Arc<Self>> {
+        let (cols, rows) = clamp_size(cols, rows);
+        let pty_system = native_pty_system();
+        let pair = pty_system.openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
+
+        let mut cmd = CommandBuilder::new(&command.program);
+        for arg in &command.args {
+            cmd.arg(arg.as_str());
+        }
+        cmd.env("TERM", "xterm-256color");
+
+        let child = pair.slave.spawn_command(cmd)?;
+        let mut reader = pair.master.try_clone_reader()?;
+        let writer = pair.master.take_writer()?;
+
+        let session = Arc::new(Self {
+            name,
+            command: command.argv(),
+            master: Mutex::new(pair.master),
+            writer: Mutex::new(writer),
+            child: Mutex::new(child),
+            clients: Mutex::new(HashMap::new()),
+            controller: Mutex::new(None),
+            parser: Mutex::new(vt100::Parser::new(rows, cols, 2000)),
+            size: Mutex::new(TermSize { cols, rows }),
+        });
+
+        let weak = Arc::downgrade(&session);
+        thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            loop {
+                let n = match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(_) => break,
+                };
+
+                let Some(session) = weak.upgrade() else {
+                    break;
+                };
+                session.on_pty_output(&buf[..n]);
+            }
+        });
+
+        Ok(session)
+    }
+
+    pub fn on_pty_output(&self, data: &[u8]) {
+        self.parser.lock().unwrap().process(data);
+
+        let clients = self
+            .clients
+            .lock()
+            .unwrap()
+            .values()
+            .map(|client| client.tx.clone())
+            .collect::<Vec<_>>();
+
+        for tx in clients {
+            let _ = tx.send(Message::Binary(data.to_vec().into()));
+        }
+    }
+
+    pub fn register_client(
+        &self,
+        id: String,
+        token: u64,
+        tx: mpsc::UnboundedSender<Message>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<String> {
+        let (cols, rows) = clamp_size(cols, rows);
+        let id = {
+            let mut clients = self.clients.lock().unwrap();
+            let id = allocate_client_id(&clients, &id);
+            clients.insert(
+                id.clone(),
+                ClientInfo::new(token, tx.clone(), TermSize { cols, rows }),
+            );
+            id
+        };
+
+        if self.controller_id().is_none() {
+            *self.controller.lock().unwrap() = Some(id.clone());
+        }
+
+        if self.controller_id().as_deref() == Some(id.as_str()) {
+            self.resize(cols, rows)?;
+        } else {
+            self.broadcast_meta();
+        }
+
+        let snapshot = self.parser.lock().unwrap().screen().state_formatted();
+        let _ = tx.send(Message::Binary(snapshot.into()));
+        Ok(id)
+    }
+
+    pub fn unregister_client(&self, id: &str, token: u64) {
+        let removed = {
+            let mut clients = self.clients.lock().unwrap();
+            if clients.get(id).map(|client| client.token()) == Some(token) {
+                clients.remove(id);
+                true
+            } else {
+                false
+            }
+        };
+
+        if !removed {
+            return;
+        }
+
+        let was_controller = self.controller_id().as_deref() == Some(id);
+        if was_controller {
+            let next = self.clients.lock().unwrap().keys().next().cloned();
+            *self.controller.lock().unwrap() = next.clone();
+
+            if let Some(next_id) = next {
+                if let Some(size) = self.client_size(&next_id) {
+                    if self.resize(size.cols, size.rows).is_ok() {
+                        return;
+                    }
+                }
+            }
+        }
+
+        self.broadcast_meta();
+    }
+
+    pub fn client_size(&self, id: &str) -> Option<TermSize> {
+        self.clients
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|client| client.size())
+    }
+
+    pub fn controller_id(&self) -> Option<String> {
+        self.controller.lock().unwrap().clone()
+    }
+
+    pub fn set_controller(&self, id: &str) -> Result<()> {
+        let size = self
+            .client_size(id)
+            .ok_or_else(|| anyhow!("client {id} is not connected to pty {}", self.name))?;
+
+        *self.controller.lock().unwrap() = Some(id.to_string());
+        self.resize(size.cols, size.rows)
+    }
+
+    pub fn set_client_size(&self, id: &str, token: u64, cols: u16, rows: u16) -> Result<()> {
+        let (cols, rows) = clamp_size(cols, rows);
+        let valid = {
+            let mut clients = self.clients.lock().unwrap();
+            let Some(client) = clients.get_mut(id) else {
+                return Ok(());
+            };
+            if client.token() != token {
+                return Ok(());
+            }
+            client.set_size(TermSize { cols, rows });
+            true
+        };
+
+        if valid && self.controller_id().as_deref() == Some(id) {
+            self.resize(cols, rows)?;
+        }
+        Ok(())
+    }
+
+    pub fn write_from_client(&self, id: &str, token: u64, data: &[u8]) -> Result<()> {
+        let token_is_current = self
+            .clients
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|client| client.token())
+            == Some(token);
+
+        if !token_is_current || self.controller_id().as_deref() != Some(id) {
+            return Ok(());
+        }
+
+        let mut writer = self.writer.lock().unwrap();
+        writer.write_all(data)?;
+        writer.flush()?;
+        Ok(())
+    }
+
+    pub fn write_from_server(&self, data: &[u8]) -> Result<()> {
+        let mut writer = self.writer.lock().unwrap();
+        writer.write_all(data)?;
+        writer.flush()?;
+        Ok(())
+    }
+
+    pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
+        let (cols, rows) = clamp_size(cols, rows);
+        let size = PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+
+        self.master.lock().unwrap().resize(size)?;
+        self.parser
+            .lock()
+            .unwrap()
+            .screen_mut()
+            .set_size(rows, cols);
+        *self.size.lock().unwrap() = TermSize { cols, rows };
+        self.broadcast_meta();
+        Ok(())
+    }
+
+    pub fn broadcast_meta(&self) {
+        let size = *self.size.lock().unwrap();
+        let controller = self.controller_id();
+        let clients = self
+            .clients
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, client)| (id.clone(), client.tx.clone()))
+            .collect::<Vec<_>>();
+
+        for (id, tx) in clients {
+            let role = if controller.as_deref() == Some(id.as_str()) {
+                "Controler"
+            } else {
+                "Viewer"
+            };
+            let msg = pty_t_demo::protocol::ServerText::Meta {
+                id: id.clone(),
+                pty: self.name.clone(),
+                role: role.to_string(),
+                cols: size.cols,
+                rows: size.rows,
+            };
+
+            if let Ok(text) = serde_json::to_string(&msg) {
+                let _ = tx.send(Message::Text(text.into()));
+            }
+        }
+    }
+
+    pub fn kill(&self) -> Result<()> {
+        self.child.lock().unwrap().kill()?;
+        Ok(())
+    }
+
+    pub fn summary(&self) -> SessionSummary {
+        let size = *self.size.lock().unwrap();
+        let controller = self.controller_id();
+        let clients = self.clients.lock().unwrap();
+        let mut ids = clients.keys().cloned().collect::<Vec<_>>();
+        ids.sort();
+        SessionSummary {
+            pty: self.name.clone(),
+            command: self.command.clone(),
+            controller,
+            cols: size.cols,
+            rows: size.rows,
+            clients: ids,
+        }
+    }
+
+    pub fn summary_line(&self) -> String {
+        let summary = self.summary();
+        format!(
+            "pty={} cmd={} size={}x{} controller={} clients=[{}]",
+            summary.pty,
+            summary.command.join(" "),
+            summary.cols,
+            summary.rows,
+            summary.controller.unwrap_or_else(|| "-".to_string()),
+            summary.clients.join(",")
+        )
+    }
+}
+
+pub fn allocate_client_id(clients: &HashMap<String, ClientInfo>, requested: &str) -> String {
+    let requested = requested.trim();
+    if !requested.is_empty() && !clients.contains_key(requested) {
+        return requested.to_string();
+    }
+
+    loop {
+        let id = format!("client-{:016x}", rand::random::<u64>());
+        if !clients.contains_key(&id) {
+            return id;
+        }
+    }
+}

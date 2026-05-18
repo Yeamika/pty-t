@@ -1,0 +1,7 @@
+[package]
+name = "pty_t_demo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pty_t_protocol = { path = "../protocol" }
