@@ -3,6 +3,7 @@ use crate::state::ServerState;
 use anyhow::Result;
 use pty_t_demo::protocol::SessionSummary;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
 #[derive(Clone)]
 pub struct PtyManager {
@@ -64,12 +65,25 @@ impl PtyManager {
         self.state.require_session(pty)?.set_controller(id)
     }
 
+    pub fn force_controller(&self, pty: &str, id: impl Into<String>) -> Result<()> {
+        self.state.require_session(pty)?.force_controller(id);
+        Ok(())
+    }
+
     pub fn resize_pty(&self, pty: &str, cols: u16, rows: u16) -> Result<()> {
         self.state.require_session(pty)?.resize(cols, rows)
     }
 
     pub fn send_to_pty(&self, pty: &str, data: &[u8]) -> Result<()> {
         self.state.require_session(pty)?.write_from_server(data)
+    }
+
+    pub fn snapshot_pty(&self, pty: &str) -> Result<Vec<u8>> {
+        Ok(self.state.require_session(pty)?.snapshot_formatted())
+    }
+
+    pub fn subscribe_output(&self, pty: &str) -> Result<mpsc::UnboundedReceiver<Vec<u8>>> {
+        Ok(self.state.require_session(pty)?.subscribe_output())
     }
 
     pub fn kill_pty(&self, pty: &str) -> Result<()> {

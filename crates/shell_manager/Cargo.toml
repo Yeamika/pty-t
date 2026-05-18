@@ -1,0 +1,18 @@
+[package]
+name = "shell_manager"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "shell-manager-demo"
+path = "src/bin/demo.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+futures-util = "0.3"
+pty_t_demo = { path = "../shared" }
+pty_t_server = { path = "../server" }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.29"

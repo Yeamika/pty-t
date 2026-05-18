@@ -77,6 +77,7 @@ pub struct Session {
     clients: Mutex<HashMap<String, ClientInfo>>,
     controller: Mutex<Option<String>>,
     parser: Mutex<vt100::Parser>,
+    output_subscribers: Mutex<Vec<mpsc::UnboundedSender<Vec<u8>>>>,
     size: Mutex<TermSize>,
 }
 
@@ -110,6 +111,7 @@ impl Session {
             clients: Mutex::new(HashMap::new()),
             controller: Mutex::new(None),
             parser: Mutex::new(vt100::Parser::new(rows, cols, 2000)),
+            output_subscribers: Mutex::new(Vec::new()),
             size: Mutex::new(TermSize { cols, rows }),
         });
 
@@ -135,6 +137,12 @@ impl Session {
 
     pub fn on_pty_output(&self, data: &[u8]) {
         self.parser.lock().unwrap().process(data);
+        let data_vec = data.to_vec();
+
+        self.output_subscribers
+            .lock()
+            .unwrap()
+            .retain(|tx| tx.send(data_vec.clone()).is_ok());
 
         let clients = self
             .clients
@@ -228,6 +236,11 @@ impl Session {
         self.controller.lock().unwrap().clone()
     }
 
+    pub fn force_controller(&self, id: impl Into<String>) {
+        *self.controller.lock().unwrap() = Some(id.into());
+        self.broadcast_meta();
+    }
+
     pub fn set_controller(&self, id: &str) -> Result<()> {
         let size = self
             .client_size(id)
@@ -281,6 +294,16 @@ impl Session {
         writer.write_all(data)?;
         writer.flush()?;
         Ok(())
+    }
+
+    pub fn subscribe_output(&self) -> mpsc::UnboundedReceiver<Vec<u8>> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.output_subscribers.lock().unwrap().push(tx);
+        rx
+    }
+
+    pub fn snapshot_formatted(&self) -> Vec<u8> {
+        self.parser.lock().unwrap().screen().state_formatted()
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
