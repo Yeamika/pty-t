@@ -197,13 +197,23 @@ async fn handle_admin_command(state: Arc<ServerState>, msg: AdminText) -> Result
             pty,
             program,
             args,
+            cwd,
+            env,
             cols,
             rows,
         } => {
+            if !state.remote_create_enabled() {
+                return Err(anyhow!(
+                    "remote create is disabled; run `remote-create on` in ptytd to enable it"
+                ));
+            }
             if program.is_empty() {
                 return Err(anyhow!("program must not be empty"));
             }
-            let command = CommandSpec { program, args };
+            let mut command = CommandSpec::new(program).args(args).envs(env);
+            if let Some(cwd) = cwd {
+                command = command.cwd(cwd);
+            }
             let argv = command.argv().join(" ");
             state.create_session(pty.clone(), command, cols, rows)?;
             Ok(ServerText::Info {
@@ -212,6 +222,9 @@ async fn handle_admin_command(state: Arc<ServerState>, msg: AdminText) -> Result
         }
         AdminText::List => Ok(ServerText::Sessions {
             sessions: state.summaries(),
+        }),
+        AdminText::Detail { pty } => Ok(ServerText::Session {
+            session: state.detail(&pty)?,
         }),
         AdminText::Control { pty, id } => {
             let session = state

@@ -22,6 +22,9 @@ struct Args {
 
     #[arg(long, default_value_t = 24)]
     rows: u16,
+
+    #[arg(long)]
+    remote_create: bool,
 }
 
 #[tokio::main]
@@ -29,15 +32,13 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let program = args.shell.unwrap_or_else(default_shell);
     let manager = PtyManager::new(
-        CommandSpec {
-            program,
-            args: Vec::new(),
-        },
+        CommandSpec::new(program),
         TermSize {
             cols: args.cols,
             rows: args.rows,
         },
     );
+    manager.set_remote_create_enabled(args.remote_create);
 
     let state = manager.state();
     let _ = start_listener(args.listen, state.clone())?;

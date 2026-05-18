@@ -83,7 +83,7 @@ jobs:
           set -euo pipefail
           pkg="${{ matrix.package }}"
           mkdir -p "dist/${pkg}"
-          cp "target/${{ matrix.target }}/release/pyttd" "dist/${pkg}/"
+          cp "target/${{ matrix.target }}/release/ptytd" "dist/${pkg}/"
           cp "target/${{ matrix.target }}/release/ptyt" "dist/${pkg}/"
           cp README.md "dist/${pkg}/"
           tar -C dist -czf "dist/${pkg}.tar.gz" "${pkg}"
@@ -94,7 +94,7 @@ jobs:
         run: |
           $pkg = "${{ matrix.package }}"
           New-Item -ItemType Directory -Force "dist/$pkg" | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/pyttd.exe" "dist/$pkg/"
+          Copy-Item "target/${{ matrix.target }}/release/ptytd.exe" "dist/$pkg/"
           Copy-Item "target/${{ matrix.target }}/release/ptyt.exe" "dist/$pkg/"
           Copy-Item "README.md" "dist/$pkg/"
           Compress-Archive -Path "dist/$pkg/*" -DestinationPath "dist/$pkg.zip" -Force

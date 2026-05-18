@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -24,10 +25,17 @@ pub enum AdminText {
         program: String,
         #[serde(default)]
         args: Vec<String>,
+        #[serde(default)]
+        cwd: Option<String>,
+        #[serde(default)]
+        env: BTreeMap<String, String>,
         cols: Option<u16>,
         rows: Option<u16>,
     },
     List,
+    Detail {
+        pty: String,
+    },
     Control {
         pty: String,
         id: String,
@@ -62,8 +70,28 @@ pub struct SessionSummary {
     pub controller: Option<String>,
     pub cols: u16,
     pub rows: u16,
+    #[serde(default)]
+    pub process_id: Option<u32>,
+    #[serde(default)]
+    pub created_at: u64,
     pub clients: Vec<String>,
     pub client_details: Vec<ClientSummary>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SessionDetail {
+    pub pty: String,
+    pub command: Vec<String>,
+    pub cwd: Option<String>,
+    pub env: BTreeMap<String, String>,
+    pub process_id: Option<u32>,
+    pub created_at: u64,
+    pub controller: Option<String>,
+    pub cols: u16,
+    pub rows: u16,
+    pub clients: Vec<String>,
+    pub client_details: Vec<ClientSummary>,
+    pub exit_code: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -84,6 +112,9 @@ pub enum ServerText {
     },
     Sessions {
         sessions: Vec<SessionSummary>,
+    },
+    Session {
+        session: SessionDetail,
     },
 }
 

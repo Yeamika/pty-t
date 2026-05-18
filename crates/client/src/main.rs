@@ -1,43 +1,67 @@
+mod admin;
 mod input;
+mod keys;
 mod render;
 
 use anyhow::{Context, Result};
-use clap::Parser;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use clap::{Parser, Subcommand};
+use crossterm::event::KeyEvent;
 use crossterm::terminal;
 use crossterm::{cursor, execute};
 use futures_util::{SinkExt, StreamExt};
-use input::{key_to_bytes, spawn_input_thread};
+use input::spawn_input_thread;
+use keys::process_key;
 use pty_t_demo::protocol::{clamp_size, ClientText, ServerText};
 use render::{draw_message, render};
-use std::io::{stdout, Stdout};
+use std::io::stdout;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::{self, Instant};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
-type ClientWsSink = futures_util::stream::SplitSink<
+pub(crate) type ClientWsSink = futures_util::stream::SplitSink<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     Message,
 >;
 
 #[derive(Debug, Parser)]
 struct Args {
-    #[arg(long, default_value = "ws://127.0.0.1:8080")]
+    #[arg(long, default_value = "ws://127.0.0.1:8080", global = true)]
     url: String,
 
-    #[arg(long)]
+    #[arg(long, global = true)]
     id: Option<String>,
 
-    #[arg(long, default_value = "main")]
+    #[arg(long, default_value = "main", global = true)]
     pty: String,
 
-    #[arg(long)]
+    #[arg(long, global = true)]
     cols: Option<u16>,
 
-    #[arg(long)]
+    #[arg(long, global = true)]
     rows: Option<u16>,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    List,
+    Detail {
+        pty: String,
+    },
+    Create {
+        pty: String,
+        program: String,
+        #[arg(long)]
+        cwd: Option<String>,
+        #[arg(long = "env")]
+        env: Vec<String>,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 pub(crate) enum LocalEvent {
@@ -104,7 +128,7 @@ impl Metrics {
         }
     }
 
-    fn record_tx(&mut self, len: usize) {
+    pub(crate) fn record_tx(&mut self, len: usize) {
         self.tx_bytes += len as u64;
     }
 
@@ -190,28 +214,98 @@ impl Drop for TerminalGuard {
     }
 }
 
+struct TerminalOptions {
+    url: String,
+    id: Option<String>,
+    pty: String,
+    cols: Option<u16>,
+    rows: Option<u16>,
+}
+
+#[derive(Clone, Copy)]
+struct TerminalSize {
+    local_cols: u16,
+    local_rows: u16,
+    desired_cols: u16,
+    desired_rows: u16,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let (local_cols, local_rows) = terminal::size()?;
-    let desired_cols = args.cols.unwrap_or(local_cols);
-    let desired_rows = args
-        .rows
-        .unwrap_or_else(|| local_rows.saturating_sub(1).max(1));
-    let (desired_cols, desired_rows) = clamp_size(desired_cols, desired_rows);
+
+    match args.command {
+        Some(Command::List) => admin::list(&args.url).await,
+        Some(Command::Detail { pty }) => admin::detail(&args.url, pty).await,
+        Some(Command::Create {
+            pty,
+            program,
+            cwd,
+            env,
+            args: command_args,
+        }) => {
+            let size = resolve_terminal_size(args.cols, args.rows)?;
+            admin::create(
+                &args.url,
+                pty.clone(),
+                program,
+                command_args,
+                cwd,
+                admin::parse_env(env)?,
+                Some(size.desired_cols),
+                Some(size.desired_rows),
+            )
+            .await?;
+            run_terminal_with_size(
+                TerminalOptions {
+                    url: args.url,
+                    id: args.id,
+                    pty,
+                    cols: args.cols,
+                    rows: args.rows,
+                },
+                size,
+            )
+            .await
+        }
+        None => {
+            run_terminal(TerminalOptions {
+                url: args.url,
+                id: args.id,
+                pty: args.pty,
+                cols: args.cols,
+                rows: args.rows,
+            })
+            .await
+        }
+    }
+}
+
+async fn run_terminal(options: TerminalOptions) -> Result<()> {
+    let size = resolve_terminal_size(options.cols, options.rows)?;
+    run_terminal_with_size(options, size).await
+}
+
+async fn run_terminal_with_size(options: TerminalOptions, size: TerminalSize) -> Result<()> {
+    let TerminalSize {
+        local_cols,
+        local_rows,
+        desired_cols,
+        desired_rows,
+    } = size;
 
     let _guard = TerminalGuard::enter()?;
     let mut out = stdout();
 
-    let (ws, _) = connect_async(&args.url)
+    let (ws, _) = connect_async(&options.url)
         .await
-        .with_context(|| format!("connect {}", args.url))?;
+        .with_context(|| format!("connect {}", options.url))?;
     let (mut ws_write, mut ws_read) = ws.split();
-    let id = args.id.unwrap_or_else(random_client_id);
+    let id = options.id.unwrap_or_else(random_client_id);
 
     let hello = ClientText::Hello {
         id: id.clone(),
-        pty: args.pty.clone(),
+        pty: options.pty.clone(),
         cols: desired_cols,
         rows: desired_rows,
     };
@@ -232,7 +326,7 @@ async fn main() -> Result<()> {
     let mut ctrl_c_streak = 0u8;
     let mut view = ViewState {
         id,
-        pty: args.pty,
+        pty: options.pty,
         role: "Viewer".to_string(),
         pty_cols: desired_cols,
         pty_rows: desired_rows,
@@ -311,7 +405,7 @@ async fn main() -> Result<()> {
                             Ok(ServerText::Error { message }) | Ok(ServerText::Info { message }) => {
                                 draw_message(&mut out, &message, &view)?;
                             }
-                            Ok(ServerText::Sessions { .. }) => {}
+                            Ok(ServerText::Sessions { .. }) | Ok(ServerText::Session { .. }) => {}
                             Err(_) => {}
                         }
                     }
@@ -336,104 +430,19 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn random_client_id() -> String {
-    format!("client-{:016x}", rand::random::<u64>())
+fn resolve_terminal_size(cols: Option<u16>, rows: Option<u16>) -> Result<TerminalSize> {
+    let (local_cols, local_rows) = terminal::size()?;
+    let desired_cols = cols.unwrap_or(local_cols);
+    let desired_rows = rows.unwrap_or_else(|| local_rows.saturating_sub(1).max(1));
+    let (desired_cols, desired_rows) = clamp_size(desired_cols, desired_rows);
+    Ok(TerminalSize {
+        local_cols,
+        local_rows,
+        desired_cols,
+        desired_rows,
+    })
 }
 
-async fn process_key(
-    key: KeyEvent,
-    parser: &vt100::Parser,
-    view: &mut ViewState,
-    metrics: &mut Metrics,
-    out: &mut Stdout,
-    ws_write: &mut ClientWsSink,
-    ctrl_c_streak: &mut u8,
-) -> Result<bool> {
-    match view.focus {
-        FocusMode::Input => {
-            if key.modifiers.contains(KeyModifiers::CONTROL)
-                && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
-            {
-                *ctrl_c_streak = ctrl_c_streak.saturating_add(1);
-                view.ctrl_c_count = *ctrl_c_streak;
-                let bytes = vec![0x03];
-                metrics.record_tx(bytes.len());
-                ws_write.send(Message::Binary(bytes.into())).await?;
-
-                if *ctrl_c_streak >= 3 {
-                    *ctrl_c_streak = 0;
-                    view.ctrl_c_count = 0;
-                    view.focus = FocusMode::Command;
-                    view.command_selection = CommandSelection::Mode;
-                }
-
-                render(out, parser, view, metrics)?;
-                return Ok(false);
-            }
-
-            let had_ctrl_c_hint = *ctrl_c_streak > 0;
-            *ctrl_c_streak = 0;
-            view.ctrl_c_count = 0;
-
-            if matches!(key.code, KeyCode::Tab) {
-                view.status_view = match view.status_view {
-                    StatusView::Normal => StatusView::Link,
-                    StatusView::Link => StatusView::Normal,
-                };
-                let bytes = b"\t".to_vec();
-                metrics.record_tx(bytes.len());
-                ws_write.send(Message::Binary(bytes.into())).await?;
-                render(out, parser, view, metrics)?;
-                return Ok(false);
-            }
-
-            if let Some(bytes) = key_to_bytes(key) {
-                metrics.record_tx(bytes.len());
-                ws_write.send(Message::Binary(bytes.into())).await?;
-            }
-
-            if had_ctrl_c_hint {
-                render(out, parser, view, metrics)?;
-            }
-            Ok(false)
-        }
-        FocusMode::Command => {
-            *ctrl_c_streak = 0;
-            view.ctrl_c_count = 0;
-
-            if key.modifiers.contains(KeyModifiers::CONTROL)
-                && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
-            {
-                return Ok(true);
-            }
-
-            match key.code {
-                KeyCode::Esc => {
-                    view.focus = FocusMode::Input;
-                    view.command_selection = CommandSelection::Mode;
-                }
-                KeyCode::Enter => match view.command_selection {
-                    CommandSelection::Mode => {
-                        view.focus = FocusMode::Input;
-                    }
-                    CommandSelection::Identity => {
-                        let msg = serde_json::to_string(&ClientText::RequestControl)?;
-                        metrics.record_tx(msg.len());
-                        ws_write.send(Message::Text(msg.into())).await?;
-                        view.focus = FocusMode::Input;
-                    }
-                },
-                KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
-                    view.command_selection = match view.command_selection {
-                        CommandSelection::Mode => CommandSelection::Identity,
-                        CommandSelection::Identity => CommandSelection::Mode,
-                    };
-                }
-                _ => {}
-            }
-
-            render(out, parser, view, metrics)?;
-            Ok(false)
-        }
-    }
+fn random_client_id() -> String {
+    format!("client-{:016x}", rand::random::<u64>())
 }

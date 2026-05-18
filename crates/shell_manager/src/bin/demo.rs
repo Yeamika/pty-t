@@ -23,10 +23,7 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
     let manager = ShellManager::default_shell(80, 24);
-    let command = CommandSpec {
-        program: args.program.unwrap_or_else(default_program),
-        args: Vec::new(),
-    };
+    let command = CommandSpec::new(args.program.unwrap_or_else(default_program));
 
     manager.create_pty(args.pty.clone(), command, None, None)?;
     if args.lock {

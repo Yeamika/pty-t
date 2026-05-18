@@ -43,6 +43,19 @@ pub async fn cli_loop(state: Arc<ServerState>) -> Result<()> {
                 }
                 let listeners = state.listeners();
                 println!("listeners=[{}]", listeners.join(","));
+                println!("remote_create={}", state.remote_create_enabled());
+            }
+            "remote-create" | "remote_create" => {
+                let value = parts
+                    .next()
+                    .ok_or_else(|| anyhow!("usage: remote-create <on|off>"))?;
+                let enabled = match value.as_str() {
+                    "on" | "true" | "1" | "enable" | "enabled" => true,
+                    "off" | "false" | "0" | "disable" | "disabled" => false,
+                    _ => return Err(anyhow!("usage: remote-create <on|off>")),
+                };
+                state.set_remote_create_enabled(enabled);
+                println!("remote_create={enabled}");
             }
             "create" => {
                 let pty = parts
@@ -52,10 +65,7 @@ pub async fn cli_loop(state: Arc<ServerState>) -> Result<()> {
                     .next()
                     .ok_or_else(|| anyhow!("usage: create <pty> <program> [args...]"))?;
                 let args = parts.map(ToString::to_string).collect::<Vec<_>>();
-                let command = CommandSpec {
-                    program: program.to_string(),
-                    args,
-                };
+                let command = CommandSpec::new(program.to_string()).args(args);
                 let argv = command.argv().join(" ");
                 state.create_session(pty.to_string(), command, None, None)?;
                 println!("created pty {pty}: {argv}");
@@ -129,5 +139,5 @@ pub async fn cli_loop(state: Arc<ServerState>) -> Result<()> {
 }
 
 pub fn print_help() {
-    println!("commands: help | list | create <pty> <program> [args...] | listen <ip:port> | control <pty> <client-id> | resize <pty> <cols> <rows> | send <pty> <text> | kill <pty> | quit");
+    println!("commands: help | list | create <pty> <program> [args...] | remote-create <on|off> | listen <ip:port> | control <pty> <client-id> | resize <pty> <cols> <rows> | send <pty> <text> | kill <pty> | quit");
 }

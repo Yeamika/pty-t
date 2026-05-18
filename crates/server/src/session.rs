@@ -1,83 +1,31 @@
+use crate::types::{path_text, OutputState};
 use anyhow::{anyhow, Result};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use pty_t_demo::protocol::{clamp_size, ClientSummary, SessionSummary};
+use pty_t_demo::protocol::{clamp_size, ClientSummary, SessionDetail, SessionSummary};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TermSize {
-    pub cols: u16,
-    pub rows: u16,
-}
-
-pub struct ClientInfo {
-    token: u64,
-    pub tx: mpsc::UnboundedSender<Message>,
-    size: TermSize,
-    peer_addr: SocketAddr,
-}
-
-impl ClientInfo {
-    pub fn new(
-        token: u64,
-        tx: mpsc::UnboundedSender<Message>,
-        size: TermSize,
-        peer_addr: SocketAddr,
-    ) -> Self {
-        Self {
-            token,
-            tx,
-            size,
-            peer_addr,
-        }
-    }
-
-    pub fn token(&self) -> u64 {
-        self.token
-    }
-
-    pub fn size(&self) -> TermSize {
-        self.size
-    }
-
-    pub fn set_size(&mut self, size: TermSize) {
-        self.size = size;
-    }
-
-    pub fn peer_addr(&self) -> SocketAddr {
-        self.peer_addr
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct CommandSpec {
-    pub program: String,
-    pub args: Vec<String>,
-}
-
-impl CommandSpec {
-    pub fn argv(&self) -> Vec<String> {
-        let mut argv = vec![self.program.clone()];
-        argv.extend(self.args.clone());
-        argv
-    }
-}
+pub use crate::client_id::allocate_client_id;
+pub use crate::types::{ClientInfo, CommandSpec, TermSize};
 
 pub struct Session {
     name: String,
-    command: Vec<String>,
+    command: CommandSpec,
+    cwd: Option<std::path::PathBuf>,
+    created_at: u64,
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
     clients: Mutex<HashMap<String, ClientInfo>>,
     controller: Mutex<Option<String>>,
     parser: Mutex<vt100::Parser>,
-    output_subscribers: Mutex<Vec<mpsc::UnboundedSender<Vec<u8>>>>,
+    output: Mutex<OutputState>,
     size: Mutex<TermSize>,
 }
 
@@ -96,6 +44,12 @@ impl Session {
         for arg in &command.args {
             cmd.arg(arg.as_str());
         }
+        if let Some(cwd) = &command.cwd {
+            cmd.cwd(cwd);
+        }
+        for (key, value) in &command.env {
+            cmd.env(key, value);
+        }
         cmd.env("TERM", "xterm-256color");
 
         let child = pair.slave.spawn_command(cmd)?;
@@ -104,14 +58,19 @@ impl Session {
 
         let session = Arc::new(Self {
             name,
-            command: command.argv(),
+            cwd: command.effective_cwd(),
+            command,
+            created_at: now_millis(),
             master: Mutex::new(pair.master),
             writer: Mutex::new(writer),
             child: Mutex::new(child),
             clients: Mutex::new(HashMap::new()),
             controller: Mutex::new(None),
             parser: Mutex::new(vt100::Parser::new(rows, cols, 2000)),
-            output_subscribers: Mutex::new(Vec::new()),
+            output: Mutex::new(OutputState {
+                history: Vec::new(),
+                subscribers: Vec::new(),
+            }),
             size: Mutex::new(TermSize { cols, rows }),
         });
 
@@ -139,10 +98,12 @@ impl Session {
         self.parser.lock().unwrap().process(data);
         let data_vec = data.to_vec();
 
-        self.output_subscribers
-            .lock()
-            .unwrap()
+        let mut output = self.output.lock().unwrap();
+        output.history.extend(&data_vec);
+        output
+            .subscribers
             .retain(|tx| tx.send(data_vec.clone()).is_ok());
+        drop(output);
 
         let clients = self
             .clients
@@ -298,7 +259,11 @@ impl Session {
 
     pub fn subscribe_output(&self) -> mpsc::UnboundedReceiver<Vec<u8>> {
         let (tx, rx) = mpsc::unbounded_channel();
-        self.output_subscribers.lock().unwrap().push(tx);
+        let mut output = self.output.lock().unwrap();
+        if !output.history.is_empty() {
+            let _ = tx.send(output.history.clone());
+        }
+        output.subscribers.push(tx);
         rx
     }
 
@@ -362,6 +327,23 @@ impl Session {
         Ok(())
     }
 
+    pub fn process_id(&self) -> Option<u32> {
+        self.child.lock().unwrap().process_id()
+    }
+
+    pub fn try_exit_code(&self) -> Result<Option<u32>> {
+        Ok(self
+            .child
+            .lock()
+            .unwrap()
+            .try_wait()?
+            .map(|status| status.exit_code()))
+    }
+
+    pub fn wait_exit_code(&self) -> Result<u32> {
+        Ok(self.child.lock().unwrap().wait()?.exit_code())
+    }
+
     pub fn summary(&self) -> SessionSummary {
         let size = *self.size.lock().unwrap();
         let controller = self.controller_id();
@@ -378,12 +360,32 @@ impl Session {
         client_details.sort_by(|a, b| a.id.cmp(&b.id));
         SessionSummary {
             pty: self.name.clone(),
-            command: self.command.clone(),
+            command: self.command.argv(),
             controller,
             cols: size.cols,
             rows: size.rows,
+            process_id: self.process_id(),
+            created_at: self.created_at,
             clients: ids,
             client_details,
+        }
+    }
+
+    pub fn detail(&self) -> SessionDetail {
+        let summary = self.summary();
+        SessionDetail {
+            pty: summary.pty,
+            command: summary.command,
+            cwd: path_text(self.cwd.as_deref()),
+            env: self.command.env.clone(),
+            process_id: summary.process_id,
+            created_at: self.created_at,
+            controller: summary.controller,
+            cols: summary.cols,
+            rows: summary.rows,
+            clients: summary.clients,
+            client_details: summary.client_details,
+            exit_code: self.try_exit_code().ok().flatten(),
         }
     }
 
@@ -406,16 +408,9 @@ impl Session {
     }
 }
 
-pub fn allocate_client_id(clients: &HashMap<String, ClientInfo>, requested: &str) -> String {
-    let requested = requested.trim();
-    if !requested.is_empty() && !clients.contains_key(requested) {
-        return requested.to_string();
-    }
-
-    loop {
-        let id = format!("client-{:016x}", rand::random::<u64>());
-        if !clients.contains_key(&id) {
-            return id;
-        }
-    }
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
 }

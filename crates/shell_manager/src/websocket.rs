@@ -55,12 +55,12 @@ async fn handle_client(
     let first_text = first
         .into_text()
         .context("first frame must be hello text")?;
-    let ClientText::Hello {
+    let Ok(ClientText::Hello {
         id,
         pty,
         cols,
         rows,
-    } = serde_json::from_str(&first_text)?
+    }) = serde_json::from_str::<ClientText>(&first_text)
     else {
         send_error(&mut ws_write, "admin websocket messages are not supported").await?;
         return Ok(());

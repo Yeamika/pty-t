@@ -1,8 +1,9 @@
 use crate::session::{CommandSpec, Session, TermSize};
 use crate::state::ServerState;
 use anyhow::Result;
-use pty_t_demo::protocol::SessionSummary;
+use pty_t_demo::protocol::{SessionDetail, SessionSummary};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 #[derive(Clone)]
@@ -18,13 +19,7 @@ impl PtyManager {
     }
 
     pub fn default_shell(cols: u16, rows: u16) -> Self {
-        Self::new(
-            CommandSpec {
-                program: default_shell(),
-                args: Vec::new(),
-            },
-            TermSize { cols, rows },
-        )
+        Self::new(CommandSpec::new(default_shell()), TermSize { cols, rows })
     }
 
     pub fn state(&self) -> Arc<ServerState> {
@@ -42,15 +37,7 @@ impl PtyManager {
     }
 
     pub fn create_bash(&self, name: impl Into<String>) -> Result<Arc<Session>> {
-        self.create_pty(
-            name,
-            CommandSpec {
-                program: default_shell(),
-                args: Vec::new(),
-            },
-            None,
-            None,
-        )
+        self.create_pty(name, CommandSpec::new(default_shell()), None, None)
     }
 
     pub fn session(&self, name: &str) -> Option<Arc<Session>> {
@@ -59,6 +46,18 @@ impl PtyManager {
 
     pub fn list(&self) -> Vec<SessionSummary> {
         self.state.summaries()
+    }
+
+    pub fn detail(&self, pty: &str) -> Result<SessionDetail> {
+        self.state.detail(pty)
+    }
+
+    pub fn remote_create_enabled(&self) -> bool {
+        self.state.remote_create_enabled()
+    }
+
+    pub fn set_remote_create_enabled(&self, enabled: bool) {
+        self.state.set_remote_create_enabled(enabled);
     }
 
     pub fn set_controller(&self, pty: &str, id: &str) -> Result<()> {
@@ -84,6 +83,31 @@ impl PtyManager {
 
     pub fn subscribe_output(&self, pty: &str) -> Result<mpsc::UnboundedReceiver<Vec<u8>>> {
         Ok(self.state.require_session(pty)?.subscribe_output())
+    }
+
+    pub fn process_id(&self, pty: &str) -> Result<Option<u32>> {
+        Ok(self.state.require_session(pty)?.process_id())
+    }
+
+    pub fn try_exit_code(&self, pty: &str) -> Result<Option<u32>> {
+        self.state.require_session(pty)?.try_exit_code()
+    }
+
+    pub fn wait_exit_code(&self, pty: &str) -> Result<u32> {
+        self.state.require_session(pty)?.wait_exit_code()
+    }
+
+    pub async fn wait_exit_code_timeout(
+        &self,
+        pty: &str,
+        timeout: Duration,
+    ) -> Result<Option<u32>> {
+        let session = self.state.require_session(pty)?;
+        let wait = tokio::task::spawn_blocking(move || session.wait_exit_code());
+        match tokio::time::timeout(timeout, wait).await {
+            Ok(result) => Ok(Some(result??)),
+            Err(_) => Ok(None),
+        }
     }
 
     pub fn kill_pty(&self, pty: &str) -> Result<()> {

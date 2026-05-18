@@ -24,13 +24,7 @@ impl ShellManager {
     }
 
     pub fn default_shell(cols: u16, rows: u16) -> Self {
-        Self::new(
-            CommandSpec {
-                program: default_shell(),
-                args: Vec::new(),
-            },
-            TermSize { cols, rows },
-        )
+        Self::new(CommandSpec::new(default_shell()), TermSize { cols, rows })
     }
 
     pub fn core(&self) -> PtyManager {

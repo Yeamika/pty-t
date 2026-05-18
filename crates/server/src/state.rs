@@ -1,8 +1,8 @@
 use crate::session::{CommandSpec, Session, TermSize};
 use anyhow::{anyhow, Result};
-use pty_t_demo::protocol::SessionSummary;
+use pty_t_demo::protocol::{SessionDetail, SessionSummary};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub struct ServerState {
@@ -10,6 +10,7 @@ pub struct ServerState {
     next_token: AtomicU64,
     default_command: CommandSpec,
     default_size: TermSize,
+    remote_create_enabled: AtomicBool,
     listeners: Mutex<Vec<String>>,
 }
 
@@ -20,6 +21,7 @@ impl ServerState {
             next_token: AtomicU64::new(1),
             default_command,
             default_size,
+            remote_create_enabled: AtomicBool::new(false),
             listeners: Mutex::new(Vec::new()),
         }
     }
@@ -34,6 +36,14 @@ impl ServerState {
 
     pub fn listeners(&self) -> Vec<String> {
         self.listeners.lock().unwrap().clone()
+    }
+
+    pub fn remote_create_enabled(&self) -> bool {
+        self.remote_create_enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn set_remote_create_enabled(&self, enabled: bool) {
+        self.remote_create_enabled.store(enabled, Ordering::Relaxed);
     }
 
     pub fn get_or_create_session(&self, name: &str, cols: u16, rows: u16) -> Result<Arc<Session>> {
@@ -97,6 +107,10 @@ impl ServerState {
             .collect::<Vec<_>>();
         summaries.sort_by(|a, b| a.pty.cmp(&b.pty));
         summaries
+    }
+
+    pub fn detail(&self, name: &str) -> Result<SessionDetail> {
+        Ok(self.require_session(name)?.detail())
     }
 
     pub fn remove_session(&self, name: &str) -> Option<Arc<Session>> {
