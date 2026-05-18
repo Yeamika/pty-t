@@ -1,8 +1,9 @@
 use anyhow::{anyhow, Result};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use pty_t_demo::protocol::{clamp_size, SessionSummary};
+use pty_t_demo::protocol::{clamp_size, ClientSummary, SessionSummary};
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tokio::sync::mpsc;
@@ -18,11 +19,22 @@ pub struct ClientInfo {
     token: u64,
     pub tx: mpsc::UnboundedSender<Message>,
     size: TermSize,
+    peer_addr: SocketAddr,
 }
 
 impl ClientInfo {
-    pub fn new(token: u64, tx: mpsc::UnboundedSender<Message>, size: TermSize) -> Self {
-        Self { token, tx, size }
+    pub fn new(
+        token: u64,
+        tx: mpsc::UnboundedSender<Message>,
+        size: TermSize,
+        peer_addr: SocketAddr,
+    ) -> Self {
+        Self {
+            token,
+            tx,
+            size,
+            peer_addr,
+        }
     }
 
     pub fn token(&self) -> u64 {
@@ -35,6 +47,10 @@ impl ClientInfo {
 
     pub fn set_size(&mut self, size: TermSize) {
         self.size = size;
+    }
+
+    pub fn peer_addr(&self) -> SocketAddr {
+        self.peer_addr
     }
 }
 
@@ -138,6 +154,7 @@ impl Session {
         id: String,
         token: u64,
         tx: mpsc::UnboundedSender<Message>,
+        peer_addr: SocketAddr,
         cols: u16,
         rows: u16,
     ) -> Result<String> {
@@ -147,7 +164,7 @@ impl Session {
             let id = allocate_client_id(&clients, &id);
             clients.insert(
                 id.clone(),
-                ClientInfo::new(token, tx.clone(), TermSize { cols, rows }),
+                ClientInfo::new(token, tx.clone(), TermSize { cols, rows }, peer_addr),
             );
             id
         };
@@ -328,6 +345,14 @@ impl Session {
         let clients = self.clients.lock().unwrap();
         let mut ids = clients.keys().cloned().collect::<Vec<_>>();
         ids.sort();
+        let mut client_details = clients
+            .iter()
+            .map(|(id, client)| ClientSummary {
+                id: id.clone(),
+                peer_addr: client.peer_addr().to_string(),
+            })
+            .collect::<Vec<_>>();
+        client_details.sort_by(|a, b| a.id.cmp(&b.id));
         SessionSummary {
             pty: self.name.clone(),
             command: self.command.clone(),
@@ -335,6 +360,7 @@ impl Session {
             cols: size.cols,
             rows: size.rows,
             clients: ids,
+            client_details,
         }
     }
 
@@ -347,7 +373,12 @@ impl Session {
             summary.cols,
             summary.rows,
             summary.controller.unwrap_or_else(|| "-".to_string()),
-            summary.clients.join(",")
+            summary
+                .client_details
+                .iter()
+                .map(|client| format!("{}@{}", client.id, client.peer_addr))
+                .collect::<Vec<_>>()
+                .join(",")
         )
     }
 }

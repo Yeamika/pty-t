@@ -3,6 +3,7 @@ use crate::state::ServerState;
 use anyhow::{anyhow, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use pty_t_demo::protocol::{AdminText, ClientText, ServerText};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -28,10 +29,10 @@ pub fn start_listener(addr: String, state: Arc<ServerState>) -> Result<String> {
 async fn accept_loop(listener: TcpListener, state: Arc<ServerState>) {
     loop {
         match listener.accept().await {
-            Ok((stream, _)) => {
+            Ok((stream, peer_addr)) => {
                 let state = state.clone();
                 tokio::spawn(async move {
-                    if let Err(err) = handle_connection(stream, state).await {
+                    if let Err(err) = handle_connection(stream, peer_addr, state).await {
                         eprintln!("connection error: {err:#}");
                     }
                 });
@@ -44,7 +45,11 @@ async fn accept_loop(listener: TcpListener, state: Arc<ServerState>) {
     }
 }
 
-pub async fn handle_connection(stream: TcpStream, state: Arc<ServerState>) -> Result<()> {
+pub async fn handle_connection(
+    stream: TcpStream,
+    peer_addr: SocketAddr,
+    state: Arc<ServerState>,
+) -> Result<()> {
     let ws = accept_async(stream).await?;
     let (mut ws_write, mut ws_read) = ws.split();
 
@@ -106,11 +111,18 @@ pub async fn handle_connection(stream: TcpStream, state: Arc<ServerState>) -> Re
     });
 
     let requested_id = id;
-    let id = session.register_client(requested_id.clone(), token, tx.clone(), cols, rows)?;
+    let id = session.register_client(
+        requested_id.clone(),
+        token,
+        tx.clone(),
+        peer_addr,
+        cols,
+        rows,
+    )?;
     if id == requested_id {
-        println!("client {id} joined pty {pty}");
+        println!("client {id} from {peer_addr} joined pty {pty}");
     } else {
-        println!("client {requested_id} joined pty {pty} as {id}");
+        println!("client {requested_id} from {peer_addr} joined pty {pty} as {id}");
     }
 
     let mut result = Ok(());

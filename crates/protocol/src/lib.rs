@@ -50,6 +50,12 @@ pub enum AdminText {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ClientSummary {
+    pub id: String,
+    pub peer_addr: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionSummary {
     pub pty: String,
     pub command: Vec<String>,
@@ -57,6 +63,7 @@ pub struct SessionSummary {
     pub cols: u16,
     pub rows: u16,
     pub clients: Vec<String>,
+    pub client_details: Vec<ClientSummary>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
