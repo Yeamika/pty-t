@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "s"
+name = "pyttd"
 path = "src/main.rs"
 
 [dependencies]

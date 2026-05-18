@@ -84,7 +84,16 @@ pub async fn handle_connection(stream: TcpStream, state: Arc<ServerState>) -> Re
         return Ok(());
     };
 
-    let session = state.get_or_create_session(&pty, cols, rows)?;
+    let Some(session) = state.session(&pty) else {
+        send_admin_response(
+            &mut ws_write,
+            Ok(ServerText::Error {
+                message: format!("pty {pty} does not exist; create it on the server first"),
+            }),
+        )
+        .await?;
+        return Ok(());
+    };
     let token = state.next_token();
     let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
 

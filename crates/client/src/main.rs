@@ -28,7 +28,7 @@ struct Args {
     url: String,
 
     #[arg(long)]
-    id: String,
+    id: Option<String>,
 
     #[arg(long, default_value = "main")]
     pty: String,
@@ -207,9 +207,10 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("connect {}", args.url))?;
     let (mut ws_write, mut ws_read) = ws.split();
+    let id = args.id.unwrap_or_else(random_client_id);
 
     let hello = ClientText::Hello {
-        id: args.id.clone(),
+        id: id.clone(),
         pty: args.pty.clone(),
         cols: desired_cols,
         rows: desired_rows,
@@ -230,7 +231,7 @@ async fn main() -> Result<()> {
     ping_tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
     let mut ctrl_c_streak = 0u8;
     let mut view = ViewState {
-        id: args.id,
+        id,
         pty: args.pty,
         role: "Viewer".to_string(),
         pty_cols: desired_cols,
@@ -333,6 +334,10 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn random_client_id() -> String {
+    format!("client-{:016x}", rand::random::<u64>())
 }
 
 async fn process_key(

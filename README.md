@@ -5,12 +5,20 @@ Cross-platform Rust PTY sharing demo with a server, terminal client, and WebSock
 ## Run
 
 ```bash
-cargo run -p pty_t_server --bin s
+cargo run -p pty_t_server --bin pyttd
+```
+
+Create a PTY from the server prompt:
+
+```text
+create main bash
 ```
 
 ```bash
-cargo run -p pty_t_client --bin c -- --url ws://127.0.0.1:8080 --id 001 --pty main
+cargo run -p pty_t_client --bin ptyt -- --url ws://127.0.0.1:8080 --pty main
 ```
+
+Client ids are optional and will be generated automatically if omitted.
 
 ## Layout
 

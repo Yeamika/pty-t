@@ -529,6 +529,7 @@ dependencies = [
  "crossterm",
  "futures-util",
  "pty_t_demo",
+ "rand",
  "serde",
  "serde_json",
  "tokio",
