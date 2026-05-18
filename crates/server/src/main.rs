@@ -1,8 +1,13 @@
+mod cli;
+mod connection;
+
 use anyhow::Result;
 use clap::Parser;
-use pty_t_server::cli::print_help;
 use pty_t_server::session::{CommandSpec, TermSize};
-use pty_t_server::{default_shell, PtyServer};
+use pty_t_server::{default_shell, PtyManager};
+
+use crate::cli::{cli_loop, print_help};
+use crate::connection::start_listener;
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -23,7 +28,7 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
     let program = args.shell.unwrap_or_else(default_shell);
-    let server = PtyServer::new(
+    let manager = PtyManager::new(
         CommandSpec {
             program,
             args: Vec::new(),
@@ -34,12 +39,12 @@ async fn main() -> Result<()> {
         },
     );
 
-    let _ = server.start_websocket(args.listen)?;
+    let state = manager.state();
+    let _ = start_listener(args.listen, state.clone())?;
     print_help();
 
-    let cli_server = server.clone();
     tokio::spawn(async move {
-        if let Err(err) = cli_server.run_cli().await {
+        if let Err(err) = cli_loop(state).await {
             eprintln!("cli error: {err:#}");
         }
     });

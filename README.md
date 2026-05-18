@@ -22,20 +22,20 @@ Client ids are optional and will be generated automatically if omitted.
 
 ## Library
 
-`pty_t_server` can be embedded directly. `pyttd` is only a thin binary that exposes the library over WebSocket and starts the interactive admin CLI.
+`pty_t_server` can be embedded directly. The core library only manages PTY sessions and exposes control functions. `pyttd` is the thin server binary that exposes those controls over WebSocket and starts the interactive admin CLI.
 
 ```rust
-use pty_t_server::{PtyServer, session::CommandSpec};
+use pty_t_server::{PtyManager, session::CommandSpec};
 
 # async fn example() -> anyhow::Result<()> {
-let server = PtyServer::default_shell(80, 24);
-server.create_pty(
+let manager = PtyManager::default_shell(80, 24);
+manager.create_pty(
     "main",
     CommandSpec { program: "bash".into(), args: vec![] },
     None,
     None,
 )?;
-server.start_websocket("127.0.0.1:8080")?;
+manager.send_to_pty("main", b"echo hello from core\n")?;
 # Ok(())
 # }
 ```

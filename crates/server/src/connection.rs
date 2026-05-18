@@ -1,8 +1,8 @@
-use crate::session::CommandSpec;
-use crate::state::ServerState;
 use anyhow::{anyhow, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use pty_t_demo::protocol::{AdminText, ClientText, ServerText};
+use pty_t_server::session::CommandSpec;
+use pty_t_server::state::ServerState;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};

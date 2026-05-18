@@ -1,5 +1,6 @@
-use crate::state::ServerState;
 use anyhow::{anyhow, Result};
+use pty_t_server::session::CommandSpec;
+use pty_t_server::state::ServerState;
 use std::io::Write;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -51,7 +52,7 @@ pub async fn cli_loop(state: Arc<ServerState>) -> Result<()> {
                     .next()
                     .ok_or_else(|| anyhow!("usage: create <pty> <program> [args...]"))?;
                 let args = parts.map(ToString::to_string).collect::<Vec<_>>();
-                let command = crate::session::CommandSpec {
+                let command = CommandSpec {
                     program: program.to_string(),
                     args,
                 };

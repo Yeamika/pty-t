@@ -1,16 +1,15 @@
-use crate::cli::cli_loop;
-use crate::connection::start_listener;
 use crate::session::{CommandSpec, Session, TermSize};
 use crate::state::ServerState;
 use anyhow::Result;
+use pty_t_demo::protocol::SessionSummary;
 use std::sync::Arc;
 
 #[derive(Clone)]
-pub struct PtyServer {
+pub struct PtyManager {
     state: Arc<ServerState>,
 }
 
-impl PtyServer {
+impl PtyManager {
     pub fn new(default_command: CommandSpec, default_size: TermSize) -> Self {
         Self {
             state: Arc::new(ServerState::new(default_command, default_size)),
@@ -53,14 +52,32 @@ impl PtyServer {
         )
     }
 
-    pub fn start_websocket(&self, addr: impl Into<String>) -> Result<String> {
-        start_listener(addr.into(), self.state.clone())
+    pub fn session(&self, name: &str) -> Option<Arc<Session>> {
+        self.state.session(name)
     }
 
-    pub async fn run_cli(&self) -> Result<()> {
-        cli_loop(self.state.clone()).await
+    pub fn list(&self) -> Vec<SessionSummary> {
+        self.state.summaries()
+    }
+
+    pub fn set_controller(&self, pty: &str, id: &str) -> Result<()> {
+        self.state.require_session(pty)?.set_controller(id)
+    }
+
+    pub fn resize_pty(&self, pty: &str, cols: u16, rows: u16) -> Result<()> {
+        self.state.require_session(pty)?.resize(cols, rows)
+    }
+
+    pub fn send_to_pty(&self, pty: &str, data: &[u8]) -> Result<()> {
+        self.state.require_session(pty)?.write_from_server(data)
+    }
+
+    pub fn kill_pty(&self, pty: &str) -> Result<()> {
+        self.state.require_removed_session(pty)?.kill()
     }
 }
+
+pub type PtyServer = PtyManager;
 
 pub fn default_shell() -> String {
     if cfg!(windows) {

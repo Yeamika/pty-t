@@ -80,6 +80,11 @@ impl ServerState {
         self.sessions.lock().unwrap().get(name).cloned()
     }
 
+    pub fn require_session(&self, name: &str) -> Result<Arc<Session>> {
+        self.session(name)
+            .ok_or_else(|| anyhow!("pty {name} does not exist"))
+    }
+
     pub fn all_sessions(&self) -> Vec<Arc<Session>> {
         self.sessions.lock().unwrap().values().cloned().collect()
     }
@@ -96,5 +101,10 @@ impl ServerState {
 
     pub fn remove_session(&self, name: &str) -> Option<Arc<Session>> {
         self.sessions.lock().unwrap().remove(name)
+    }
+
+    pub fn require_removed_session(&self, name: &str) -> Result<Arc<Session>> {
+        self.remove_session(name)
+            .ok_or_else(|| anyhow!("pty {name} does not exist"))
     }
 }
