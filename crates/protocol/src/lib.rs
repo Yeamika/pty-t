@@ -52,6 +52,10 @@ pub enum AdminText {
     Kill {
         pty: String,
     },
+    HistoryLimit {
+        pty: String,
+        bytes: usize,
+    },
     Listen {
         addr: String,
     },
@@ -74,6 +78,10 @@ pub struct SessionSummary {
     pub process_id: Option<u32>,
     #[serde(default)]
     pub created_at: u64,
+    #[serde(default)]
+    pub output_history_bytes: usize,
+    #[serde(default)]
+    pub output_history_limit: usize,
     pub clients: Vec<String>,
     pub client_details: Vec<ClientSummary>,
 }
@@ -89,6 +97,10 @@ pub struct SessionDetail {
     pub controller: Option<String>,
     pub cols: u16,
     pub rows: u16,
+    #[serde(default)]
+    pub output_history_bytes: usize,
+    #[serde(default)]
+    pub output_history_limit: usize,
     pub clients: Vec<String>,
     pub client_details: Vec<ClientSummary>,
     pub exit_code: Option<u32>,

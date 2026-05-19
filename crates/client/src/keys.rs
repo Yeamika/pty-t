@@ -3,7 +3,7 @@ use crate::{ClientWsSink, CommandSelection, FocusMode, Metrics, ViewState};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use futures_util::SinkExt;
-use pty_t_demo::protocol::ClientText;
+use pty_t_protocol::ClientText;
 use std::io::Stdout;
 use tokio_tungstenite::tungstenite::Message;
 

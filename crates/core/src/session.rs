@@ -11,6 +11,8 @@ use tokio::sync::mpsc;
 pub use crate::client_id::allocate_client_id;
 pub use crate::types::{ClientInfo, CommandSpec, SessionDetail, SessionSummary, TermSize};
 
+pub const DEFAULT_OUTPUT_HISTORY_LIMIT: usize = 1024 * 1024;
+
 pub struct Session {
     name: String,
     command: CommandSpec,
@@ -66,6 +68,7 @@ impl Session {
             parser: Mutex::new(vt100::Parser::new(rows, cols, 2000)),
             output: Mutex::new(OutputState {
                 history: Vec::new(),
+                history_limit: DEFAULT_OUTPUT_HISTORY_LIMIT,
                 subscribers: Vec::new(),
             }),
             size: Mutex::new(TermSize { cols, rows }),
@@ -97,6 +100,8 @@ impl Session {
 
         let mut output = self.output.lock().unwrap();
         output.history.extend(&data_vec);
+        let history_limit = output.history_limit;
+        trim_history(&mut output.history, history_limit);
         output
             .subscribers
             .retain(|tx| tx.send(data_vec.clone()).is_ok());
@@ -225,6 +230,21 @@ impl Session {
         self.subscribe_output_inner(true)
     }
 
+    pub fn output_history_len(&self) -> usize {
+        self.output.lock().unwrap().history.len()
+    }
+
+    pub fn output_history_limit(&self) -> usize {
+        self.output.lock().unwrap().history_limit
+    }
+
+    pub fn set_output_history_limit(&self, limit: usize) {
+        let mut output = self.output.lock().unwrap();
+        output.history_limit = limit;
+        let history_limit = output.history_limit;
+        trim_history(&mut output.history, history_limit);
+    }
+
     pub fn subscribe_live_output(&self) -> mpsc::UnboundedReceiver<Vec<u8>> {
         self.subscribe_output_inner(false)
     }
@@ -298,6 +318,8 @@ impl Session {
             rows: size.rows,
             process_id: self.process_id(),
             created_at: self.created_at,
+            output_history_bytes: self.output_history_len(),
+            output_history_limit: self.output_history_limit(),
             clients: ids,
         }
     }
@@ -314,6 +336,8 @@ impl Session {
             controller: summary.controller,
             cols: summary.cols,
             rows: summary.rows,
+            output_history_bytes: summary.output_history_bytes,
+            output_history_limit: summary.output_history_limit,
             clients: summary.clients,
             exit_code: self.try_exit_code().ok().flatten(),
         }
@@ -335,6 +359,18 @@ impl Session {
 
 fn clamp_size(cols: u16, rows: u16) -> (u16, u16) {
     (cols.max(1), rows.max(1))
+}
+
+fn trim_history(history: &mut Vec<u8>, limit: usize) {
+    if history.len() <= limit {
+        return;
+    }
+    if limit == 0 {
+        history.clear();
+    } else {
+        let remove_len = history.len() - limit;
+        history.drain(..remove_len);
+    }
 }
 
 fn now_millis() -> u64 {

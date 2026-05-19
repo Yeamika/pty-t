@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use pty_t_core::session::CommandSpec;
 use pty_t_core::state::ServerState;
-use pty_t_demo::protocol::{
+use pty_t_protocol::{
     AdminText, ClientSummary, ClientText, ServerText, SessionDetail, SessionSummary,
 };
 use std::collections::HashMap;
@@ -138,6 +138,8 @@ impl ServerRuntime {
             rows: summary.rows,
             process_id: summary.process_id,
             created_at: summary.created_at,
+            output_history_bytes: summary.output_history_bytes,
+            output_history_limit: summary.output_history_limit,
             clients: summary.clients,
             client_details,
         }
@@ -155,6 +157,8 @@ impl ServerRuntime {
             controller: detail.controller,
             cols: detail.cols,
             rows: detail.rows,
+            output_history_bytes: detail.output_history_bytes,
+            output_history_limit: detail.output_history_limit,
             clients: detail.clients,
             client_details,
             exit_code: detail.exit_code,
@@ -485,6 +489,16 @@ async fn handle_admin_command(runtime: Arc<ServerRuntime>, msg: AdminText) -> Re
             runtime.close_pty_clients(&pty);
             Ok(ServerText::Info {
                 message: format!("killed {pty}"),
+            })
+        }
+        AdminText::HistoryLimit { pty, bytes } => {
+            let session = runtime
+                .core()
+                .session(&pty)
+                .ok_or_else(|| anyhow!("pty {pty} does not exist"))?;
+            session.set_output_history_limit(bytes);
+            Ok(ServerText::Info {
+                message: format!("history limit for {pty} is now {bytes} bytes"),
             })
         }
         AdminText::Listen { addr } => {

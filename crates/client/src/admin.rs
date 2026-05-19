@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use pty_t_demo::protocol::{AdminText, ServerText, SessionDetail, SessionSummary};
+use pty_t_protocol::{AdminText, ServerText, SessionDetail, SessionSummary};
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_tungstenite::connect_async;
@@ -66,6 +66,19 @@ pub async fn create(url: &str, options: CreateOptions) -> Result<()> {
     }
 }
 
+pub async fn history_limit(url: &str, pty: String, bytes: usize) -> Result<()> {
+    match request(url, AdminText::HistoryLimit { pty, bytes }).await? {
+        ServerText::Info { message } => {
+            println!("{message}");
+            Ok(())
+        }
+        ServerText::Error { message } => Err(anyhow!(message)),
+        _ => Err(anyhow!(
+            "server returned an unexpected response to history-limit"
+        )),
+    }
+}
+
 pub fn parse_env(values: Vec<String>) -> Result<BTreeMap<String, String>> {
     let mut env = BTreeMap::new();
     for value in values {
@@ -108,16 +121,20 @@ fn print_sessions(sessions: &[SessionSummary]) -> Result<()> {
     }
 
     println!(
-        "{:<20} {:>8} {:>10} {:>9} {:>12}  COMMAND",
-        "PTY", "PID", "SIZE", "CLIENTS", "CREATED"
+        "{:<20} {:>8} {:>10} {:>9} {:>15} {:>12}  COMMAND",
+        "PTY", "PID", "SIZE", "CLIENTS", "HISTORY", "CREATED"
     );
     for session in sessions {
         println!(
-            "{:<20} {:>8} {:>10} {:>9} {:>12}  {}",
+            "{:<20} {:>8} {:>10} {:>9} {:>15} {:>12}  {}",
             session.pty,
             opt_u32(session.process_id),
             format!("{}x{}", session.cols, session.rows),
             session.clients.len(),
+            format!(
+                "{}/{}",
+                session.output_history_bytes, session.output_history_limit
+            ),
             time_text(session.created_at),
             command_text(&session.command),
         );
@@ -132,6 +149,10 @@ fn print_detail(session: &SessionDetail) {
     println!("cwd: {}", session.cwd.as_deref().unwrap_or("-"));
     println!("created: {}", time_text(session.created_at));
     println!("size: {}x{}", session.cols, session.rows);
+    println!(
+        "history: {}/{} bytes",
+        session.output_history_bytes, session.output_history_limit
+    );
     println!(
         "controller: {}",
         session.controller.as_deref().unwrap_or("-")

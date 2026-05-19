@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use pty_t_core::session::CommandSpec;
-use pty_t_demo::protocol::SessionSummary;
+use pty_t_protocol::SessionSummary;
 use std::io::Write;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -141,6 +141,21 @@ pub async fn cli_loop(runtime: Arc<ServerRuntime>) -> Result<()> {
                 runtime.close_pty_clients(pty);
                 println!("killed {pty}");
             }
+            "history-limit" | "history_limit" => {
+                let pty = parts
+                    .next()
+                    .ok_or_else(|| anyhow!("usage: history-limit <pty> <bytes>"))?;
+                let bytes = parts
+                    .next()
+                    .ok_or_else(|| anyhow!("usage: history-limit <pty> <bytes>"))?
+                    .parse::<usize>()?;
+                let session = runtime
+                    .core()
+                    .session(pty)
+                    .ok_or_else(|| anyhow!("pty {pty} does not exist"))?;
+                session.set_output_history_limit(bytes);
+                println!("history limit for {pty} is now {bytes} bytes");
+            }
             "quit" | "exit" => std::process::exit(0),
             _ => println!("unknown command: {cmd}; try help"),
         }
@@ -150,7 +165,7 @@ pub async fn cli_loop(runtime: Arc<ServerRuntime>) -> Result<()> {
 }
 
 pub fn print_help() {
-    println!("commands: help | list | create <pty> <program> [args...] | remote-create <on|off> | listen <ip:port> | control <pty> <client-id> | resize <pty> <cols> <rows> | send <pty> <text> | kill <pty> | quit");
+    println!("commands: help | list | create <pty> <program> [args...] | remote-create <on|off> | listen <ip:port> | control <pty> <client-id> | resize <pty> <cols> <rows> | send <pty> <text> | kill <pty> | history-limit <pty> <bytes> | quit");
 }
 
 fn summary_line(session: &SessionSummary) -> String {
@@ -166,11 +181,13 @@ fn summary_line(session: &SessionSummary) -> String {
     };
 
     format!(
-        "pty={} cmd={} size={}x{} controller={} clients=[{}]",
+        "pty={} cmd={} size={}x{} history={}/{} controller={} clients=[{}]",
         session.pty,
         session.command.join(" "),
         session.cols,
         session.rows,
+        session.output_history_bytes,
+        session.output_history_limit,
         session.controller.as_deref().unwrap_or("-"),
         clients,
     )

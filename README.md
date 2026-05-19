@@ -26,9 +26,12 @@ Client management commands:
 ptyt --url ws://127.0.0.1:8080 list
 ptyt --url ws://127.0.0.1:8080 detail main
 ptyt --url ws://127.0.0.1:8080 create main bash
+ptyt --url ws://127.0.0.1:8080 history-limit main 1048576
 ```
 
 Remote create is disabled by default. Enable it from the `ptytd` prompt with `remote-create on` or start `ptytd --remote-create`.
+
+PTY output history is retained per session for late subscribers. The default limit is 1 MiB per PTY. Set it from the server prompt with `history-limit <pty> <bytes>` or remotely with `ptyt history-limit <pty> <bytes>`.
 
 ## Library
 
@@ -57,6 +60,5 @@ let exit = manager.wait_exit_code("main")?;
 
 - `crates/protocol`: shared WebSocket protocol types
 - `crates/core`: PTY/session core without network code
-- `crates/shared`: shared facade crate
 - `crates/server`: PTY WebSocket server and admin CLI
 - `crates/client`: terminal client TUI

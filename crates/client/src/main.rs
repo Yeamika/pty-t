@@ -11,7 +11,7 @@ use crossterm::{cursor, execute};
 use futures_util::{SinkExt, StreamExt};
 use input::spawn_input_thread;
 use keys::process_key;
-use pty_t_demo::protocol::{clamp_size, ClientText, ServerText};
+use pty_t_protocol::{clamp_size, ClientText, ServerText};
 use render::{draw_message, render};
 use std::io::stdout;
 use std::time::Duration;
@@ -61,6 +61,10 @@ enum Command {
         env: Vec<String>,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+    },
+    HistoryLimit {
+        pty: String,
+        bytes: usize,
     },
 }
 
@@ -269,6 +273,9 @@ async fn main() -> Result<()> {
                 size,
             )
             .await
+        }
+        Some(Command::HistoryLimit { pty, bytes }) => {
+            admin::history_limit(&args.url, pty, bytes).await
         }
         None => {
             run_terminal(TerminalOptions {

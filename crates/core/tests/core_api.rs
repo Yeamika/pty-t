@@ -61,3 +61,34 @@ async fn wait_exit_code_timeout_does_not_block_later_kill() {
     );
     manager.kill_pty("main").unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn output_history_defaults_to_one_mib_and_can_be_limited() {
+    use pty_t_core::session::{CommandSpec, DEFAULT_OUTPUT_HISTORY_LIMIT};
+    use pty_t_core::PtyManager;
+
+    let manager = PtyManager::default_shell(80, 24);
+    let session = manager
+        .create_pty(
+            "main",
+            CommandSpec::new("sh").args(["-lc", "cat"]),
+            None,
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(session.output_history_limit(), DEFAULT_OUTPUT_HISTORY_LIMIT);
+
+    session.set_output_history_limit(4);
+    session.on_pty_output(b"abcdef");
+
+    assert_eq!(session.output_history_limit(), 4);
+    assert_eq!(session.output_history_len(), 4);
+    assert!(!manager.snapshot_pty("main").unwrap().is_empty());
+
+    session.set_output_history_limit(0);
+    assert_eq!(session.output_history_len(), 0);
+
+    manager.kill_pty("main").unwrap();
+}

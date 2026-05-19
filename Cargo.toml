@@ -2,7 +2,6 @@
 members = [
     "crates/core",
     "crates/protocol",
-    "crates/shared",
     "crates/server",
     "crates/client",
 ]

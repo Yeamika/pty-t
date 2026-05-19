@@ -34,6 +34,7 @@ impl ClientInfo {
 
 pub(crate) struct OutputState {
     pub history: Vec<u8>,
+    pub history_limit: usize,
     pub subscribers: Vec<mpsc::UnboundedSender<Vec<u8>>>,
 }
 
@@ -109,6 +110,8 @@ pub struct SessionSummary {
     pub rows: u16,
     pub process_id: Option<u32>,
     pub created_at: u64,
+    pub output_history_bytes: usize,
+    pub output_history_limit: usize,
     pub clients: Vec<String>,
 }
 
@@ -123,6 +126,8 @@ pub struct SessionDetail {
     pub controller: Option<String>,
     pub cols: u16,
     pub rows: u16,
+    pub output_history_bytes: usize,
+    pub output_history_limit: usize,
     pub clients: Vec<String>,
     pub exit_code: Option<u32>,
 }
