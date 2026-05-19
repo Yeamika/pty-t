@@ -87,6 +87,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/ptytd" "dist/${pkg}/"
           cp "target/${{ matrix.target }}/release/ptyt" "dist/${pkg}/"
           cp README.md "dist/${pkg}/"
+          cp README.zh-CN.md "dist/${pkg}/"
           tar -C dist -czf "dist/${pkg}.tar.gz" "${pkg}"
 
       - name: Package Windows
@@ -98,6 +99,7 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/ptytd.exe" "dist/$pkg/"
           Copy-Item "target/${{ matrix.target }}/release/ptyt.exe" "dist/$pkg/"
           Copy-Item "README.md" "dist/$pkg/"
+          Copy-Item "README.zh-CN.md" "dist/$pkg/"
           Compress-Archive -Path "dist/$pkg/*" -DestinationPath "dist/$pkg.zip" -Force
 
       - name: Upload artifact
