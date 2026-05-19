@@ -4,24 +4,24 @@ use std::thread;
 use tokio::sync::mpsc;
 
 pub fn spawn_input_thread(tx: mpsc::UnboundedSender<LocalEvent>) {
-    thread::spawn(move || loop {
-        let Ok(event) = event::read() else {
-            break;
-        };
+    thread::spawn(move || {
+        while let Ok(event) = event::read() {
+            match event {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    if key.code == KeyCode::Char(']')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        let _ = tx.send(LocalEvent::Quit);
+                        break;
+                    }
 
-        match event {
-            Event::Key(key) if key.kind == KeyEventKind::Press => {
-                if key.code == KeyCode::Char(']') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                    let _ = tx.send(LocalEvent::Quit);
-                    break;
+                    let _ = tx.send(LocalEvent::Key(key));
                 }
-
-                let _ = tx.send(LocalEvent::Key(key));
+                Event::Resize(cols, rows) => {
+                    let _ = tx.send(LocalEvent::Resize { cols, rows });
+                }
+                _ => {}
             }
-            Event::Resize(cols, rows) => {
-                let _ = tx.send(LocalEvent::Resize { cols, rows });
-            }
-            _ => {}
         }
     });
 }

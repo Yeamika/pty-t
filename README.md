@@ -32,10 +32,10 @@ Remote create is disabled by default. Enable it from the `ptytd` prompt with `re
 
 ## Library
 
-`pty_t_server` can be embedded directly. The core library only manages PTY sessions and exposes control functions. `ptytd` is the thin server binary that exposes those controls over WebSocket and starts the interactive admin CLI.
+`pty_t_core` can be embedded directly. The core library only manages PTY sessions and exposes control functions. `ptytd` is the thin server binary that exposes those controls over WebSocket and starts the interactive admin CLI.
 
 ```rust
-use pty_t_server::{PtyManager, session::CommandSpec};
+use pty_t_core::{PtyManager, session::CommandSpec};
 
 # async fn example() -> anyhow::Result<()> {
 let manager = PtyManager::default_shell(80, 24);
@@ -53,37 +53,10 @@ let exit = manager.wait_exit_code("main")?;
 # }
 ```
 
-`shell_manager` wraps the core library for remote execution workflows. It can open a `ptyt`-compatible WebSocket endpoint, but that endpoint only accepts terminal clients and does not expose admin create/control APIs.
-
-```rust
-use shell_manager::ShellManager;
-use std::time::Duration;
-
-# async fn example() -> anyhow::Result<()> {
-let manager = ShellManager::default_shell(80, 24);
-manager.create_bash("main")?;
-manager.lock_pty("main")?; // controller becomes user 0
-
-let output = manager
-    .attach_execute("main", b"echo hello\n", Duration::from_millis(500))
-    .await?;
-let snapshot = manager.snapshot("main")?;
-
-let _addr = manager.start_websocket("127.0.0.1:8080")?;
-# Ok(())
-# }
-```
-
-Run the demo:
-
-```bash
-cargo run -p shell_manager --bin shell-manager-demo
-```
-
 ## Layout
 
 - `crates/protocol`: shared WebSocket protocol types
+- `crates/core`: PTY/session core without network code
 - `crates/shared`: shared facade crate
-- `crates/server`: PTY server and admin CLI
+- `crates/server`: PTY WebSocket server and admin CLI
 - `crates/client`: terminal client TUI
-- `crates/shell_manager`: library/demo for controlled remote shell execution

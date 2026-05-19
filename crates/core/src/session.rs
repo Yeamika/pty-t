@@ -1,18 +1,15 @@
 use crate::types::{path_text, OutputState};
 use anyhow::{anyhow, Result};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use pty_t_demo::protocol::{clamp_size, ClientSummary, SessionDetail, SessionSummary};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::Message;
 
 pub use crate::client_id::allocate_client_id;
-pub use crate::types::{ClientInfo, CommandSpec, TermSize};
+pub use crate::types::{ClientInfo, CommandSpec, SessionDetail, SessionSummary, TermSize};
 
 pub struct Session {
     name: String,
@@ -103,38 +100,14 @@ impl Session {
         output
             .subscribers
             .retain(|tx| tx.send(data_vec.clone()).is_ok());
-        drop(output);
-
-        let clients = self
-            .clients
-            .lock()
-            .unwrap()
-            .values()
-            .map(|client| client.tx.clone())
-            .collect::<Vec<_>>();
-
-        for tx in clients {
-            let _ = tx.send(Message::Binary(data.to_vec().into()));
-        }
     }
 
-    pub fn register_client(
-        &self,
-        id: String,
-        token: u64,
-        tx: mpsc::UnboundedSender<Message>,
-        peer_addr: SocketAddr,
-        cols: u16,
-        rows: u16,
-    ) -> Result<String> {
+    pub fn register_client(&self, id: String, token: u64, cols: u16, rows: u16) -> Result<String> {
         let (cols, rows) = clamp_size(cols, rows);
         let id = {
             let mut clients = self.clients.lock().unwrap();
             let id = allocate_client_id(&clients, &id);
-            clients.insert(
-                id.clone(),
-                ClientInfo::new(token, tx.clone(), TermSize { cols, rows }, peer_addr),
-            );
+            clients.insert(id.clone(), ClientInfo::new(token, TermSize { cols, rows }));
             id
         };
 
@@ -144,12 +117,8 @@ impl Session {
 
         if self.controller_id().as_deref() == Some(id.as_str()) {
             self.resize(cols, rows)?;
-        } else {
-            self.broadcast_meta();
         }
 
-        let snapshot = self.parser.lock().unwrap().screen().state_formatted();
-        let _ = tx.send(Message::Binary(snapshot.into()));
         Ok(id)
     }
 
@@ -175,14 +144,10 @@ impl Session {
 
             if let Some(next_id) = next {
                 if let Some(size) = self.client_size(&next_id) {
-                    if self.resize(size.cols, size.rows).is_ok() {
-                        return;
-                    }
+                    let _ = self.resize(size.cols, size.rows);
                 }
             }
         }
-
-        self.broadcast_meta();
     }
 
     pub fn client_size(&self, id: &str) -> Option<TermSize> {
@@ -199,7 +164,6 @@ impl Session {
 
     pub fn force_controller(&self, id: impl Into<String>) {
         *self.controller.lock().unwrap() = Some(id.into());
-        self.broadcast_meta();
     }
 
     pub fn set_controller(&self, id: &str) -> Result<()> {
@@ -258,9 +222,17 @@ impl Session {
     }
 
     pub fn subscribe_output(&self) -> mpsc::UnboundedReceiver<Vec<u8>> {
+        self.subscribe_output_inner(true)
+    }
+
+    pub fn subscribe_live_output(&self) -> mpsc::UnboundedReceiver<Vec<u8>> {
+        self.subscribe_output_inner(false)
+    }
+
+    fn subscribe_output_inner(&self, include_history: bool) -> mpsc::UnboundedReceiver<Vec<u8>> {
         let (tx, rx) = mpsc::unbounded_channel();
         let mut output = self.output.lock().unwrap();
-        if !output.history.is_empty() {
+        if include_history && !output.history.is_empty() {
             let _ = tx.send(output.history.clone());
         }
         output.subscribers.push(tx);
@@ -287,39 +259,7 @@ impl Session {
             .screen_mut()
             .set_size(rows, cols);
         *self.size.lock().unwrap() = TermSize { cols, rows };
-        self.broadcast_meta();
         Ok(())
-    }
-
-    pub fn broadcast_meta(&self) {
-        let size = *self.size.lock().unwrap();
-        let controller = self.controller_id();
-        let clients = self
-            .clients
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(id, client)| (id.clone(), client.tx.clone()))
-            .collect::<Vec<_>>();
-
-        for (id, tx) in clients {
-            let role = if controller.as_deref() == Some(id.as_str()) {
-                "Controler"
-            } else {
-                "Viewer"
-            };
-            let msg = pty_t_demo::protocol::ServerText::Meta {
-                id: id.clone(),
-                pty: self.name.clone(),
-                role: role.to_string(),
-                cols: size.cols,
-                rows: size.rows,
-            };
-
-            if let Ok(text) = serde_json::to_string(&msg) {
-                let _ = tx.send(Message::Text(text.into()));
-            }
-        }
     }
 
     pub fn kill(&self) -> Result<()> {
@@ -350,14 +290,6 @@ impl Session {
         let clients = self.clients.lock().unwrap();
         let mut ids = clients.keys().cloned().collect::<Vec<_>>();
         ids.sort();
-        let mut client_details = clients
-            .iter()
-            .map(|(id, client)| ClientSummary {
-                id: id.clone(),
-                peer_addr: client.peer_addr().to_string(),
-            })
-            .collect::<Vec<_>>();
-        client_details.sort_by(|a, b| a.id.cmp(&b.id));
         SessionSummary {
             pty: self.name.clone(),
             command: self.command.argv(),
@@ -367,7 +299,6 @@ impl Session {
             process_id: self.process_id(),
             created_at: self.created_at,
             clients: ids,
-            client_details,
         }
     }
 
@@ -384,7 +315,6 @@ impl Session {
             cols: summary.cols,
             rows: summary.rows,
             clients: summary.clients,
-            client_details: summary.client_details,
             exit_code: self.try_exit_code().ok().flatten(),
         }
     }
@@ -398,14 +328,13 @@ impl Session {
             summary.cols,
             summary.rows,
             summary.controller.unwrap_or_else(|| "-".to_string()),
-            summary
-                .client_details
-                .iter()
-                .map(|client| format!("{}@{}", client.id, client.peer_addr))
-                .collect::<Vec<_>>()
-                .join(",")
+            summary.clients.join(",")
         )
     }
+}
+
+fn clamp_size(cols: u16, rows: u16) -> (u16, u16) {
+    (cols.max(1), rows.max(1))
 }
 
 fn now_millis() -> u64 {

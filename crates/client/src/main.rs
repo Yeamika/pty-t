@@ -247,13 +247,15 @@ async fn main() -> Result<()> {
             let size = resolve_terminal_size(args.cols, args.rows)?;
             admin::create(
                 &args.url,
-                pty.clone(),
-                program,
-                command_args,
-                cwd,
-                admin::parse_env(env)?,
-                Some(size.desired_cols),
-                Some(size.desired_rows),
+                admin::CreateOptions {
+                    pty: pty.clone(),
+                    program,
+                    args: command_args,
+                    cwd,
+                    env: admin::parse_env(env)?,
+                    cols: Some(size.desired_cols),
+                    rows: Some(size.desired_rows),
+                },
             )
             .await?;
             run_terminal_with_size(

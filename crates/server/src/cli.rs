@@ -1,11 +1,13 @@
 use anyhow::{anyhow, Result};
-use pty_t_server::session::CommandSpec;
-use pty_t_server::state::ServerState;
+use pty_t_core::session::CommandSpec;
+use pty_t_demo::protocol::SessionSummary;
 use std::io::Write;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-pub async fn cli_loop(state: Arc<ServerState>) -> Result<()> {
+use crate::connection::{start_listener, ServerRuntime};
+
+pub async fn cli_loop(runtime: Arc<ServerRuntime>) -> Result<()> {
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
 
     loop {
@@ -33,17 +35,17 @@ pub async fn cli_loop(state: Arc<ServerState>) -> Result<()> {
         match cmd {
             "help" | "h" => print_help(),
             "list" | "ls" => {
-                let sessions = state.all_sessions();
+                let sessions = runtime.summaries();
                 if sessions.is_empty() {
                     println!("no sessions");
                 } else {
                     for session in sessions {
-                        println!("{}", session.summary_line());
+                        println!("{}", summary_line(&session));
                     }
                 }
-                let listeners = state.listeners();
+                let listeners = runtime.listeners();
                 println!("listeners=[{}]", listeners.join(","));
-                println!("remote_create={}", state.remote_create_enabled());
+                println!("remote_create={}", runtime.remote_create_enabled());
             }
             "remote-create" | "remote_create" => {
                 let value = parts
@@ -54,7 +56,7 @@ pub async fn cli_loop(state: Arc<ServerState>) -> Result<()> {
                     "off" | "false" | "0" | "disable" | "disabled" => false,
                     _ => return Err(anyhow!("usage: remote-create <on|off>")),
                 };
-                state.set_remote_create_enabled(enabled);
+                runtime.set_remote_create_enabled(enabled);
                 println!("remote_create={enabled}");
             }
             "create" => {
@@ -67,14 +69,16 @@ pub async fn cli_loop(state: Arc<ServerState>) -> Result<()> {
                 let args = parts.map(ToString::to_string).collect::<Vec<_>>();
                 let command = CommandSpec::new(program.to_string()).args(args);
                 let argv = command.argv().join(" ");
-                state.create_session(pty.to_string(), command, None, None)?;
+                runtime
+                    .core()
+                    .create_session(pty.to_string(), command, None, None)?;
                 println!("created pty {pty}: {argv}");
             }
             "listen" => {
                 let addr = parts
                     .next()
                     .ok_or_else(|| anyhow!("usage: listen <ip:port>"))?;
-                let actual = crate::connection::start_listener(addr.to_string(), state.clone())?;
+                let actual = start_listener(addr.to_string(), runtime.clone())?;
                 println!("listening on ws://{actual}");
             }
             "control" | "controller" => {
@@ -84,10 +88,12 @@ pub async fn cli_loop(state: Arc<ServerState>) -> Result<()> {
                 let id = parts
                     .next()
                     .ok_or_else(|| anyhow!("usage: control <pty> <client-id>"))?;
-                let session = state
+                let session = runtime
+                    .core()
                     .session(pty)
                     .ok_or_else(|| anyhow!("pty {pty} does not exist"))?;
                 session.set_controller(id)?;
+                runtime.broadcast_meta(pty);
                 println!("controller for {pty} is now {id}");
             }
             "resize" => {
@@ -102,10 +108,12 @@ pub async fn cli_loop(state: Arc<ServerState>) -> Result<()> {
                     .next()
                     .ok_or_else(|| anyhow!("usage: resize <pty> <cols> <rows>"))?
                     .parse::<u16>()?;
-                let session = state
+                let session = runtime
+                    .core()
                     .session(pty)
                     .ok_or_else(|| anyhow!("pty {pty} does not exist"))?;
                 session.resize(cols, rows)?;
+                runtime.broadcast_meta(pty);
                 println!("resized {pty} to {cols}x{rows}");
             }
             "send" | "input" => {
@@ -115,7 +123,8 @@ pub async fn cli_loop(state: Arc<ServerState>) -> Result<()> {
                     .next()
                     .ok_or_else(|| anyhow!("usage: send <pty> <text>"))?;
                 let text = split.next().unwrap_or_default();
-                let session = state
+                let session = runtime
+                    .core()
                     .session(pty)
                     .ok_or_else(|| anyhow!("pty {pty} does not exist"))?;
                 let mut bytes = text.as_bytes().to_vec();
@@ -124,10 +133,12 @@ pub async fn cli_loop(state: Arc<ServerState>) -> Result<()> {
             }
             "kill" => {
                 let pty = parts.next().ok_or_else(|| anyhow!("usage: kill <pty>"))?;
-                let session = state
+                let session = runtime
+                    .core()
                     .remove_session(pty)
                     .ok_or_else(|| anyhow!("pty {pty} does not exist"))?;
                 session.kill()?;
+                runtime.close_pty_clients(pty);
                 println!("killed {pty}");
             }
             "quit" | "exit" => std::process::exit(0),
@@ -140,4 +151,27 @@ pub async fn cli_loop(state: Arc<ServerState>) -> Result<()> {
 
 pub fn print_help() {
     println!("commands: help | list | create <pty> <program> [args...] | remote-create <on|off> | listen <ip:port> | control <pty> <client-id> | resize <pty> <cols> <rows> | send <pty> <text> | kill <pty> | quit");
+}
+
+fn summary_line(session: &SessionSummary) -> String {
+    let clients = if session.client_details.is_empty() {
+        session.clients.join(",")
+    } else {
+        session
+            .client_details
+            .iter()
+            .map(|client| format!("{}@{}", client.id, client.peer_addr))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+
+    format!(
+        "pty={} cmd={} size={}x{} controller={} clients=[{}]",
+        session.pty,
+        session.command.join(" "),
+        session.cols,
+        session.rows,
+        session.controller.as_deref().unwrap_or("-"),
+        clients,
+    )
 }

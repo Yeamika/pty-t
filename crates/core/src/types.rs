@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::Message;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TermSize {
@@ -10,26 +8,15 @@ pub struct TermSize {
     pub rows: u16,
 }
 
+#[derive(Clone, Debug)]
 pub struct ClientInfo {
     token: u64,
-    pub tx: mpsc::UnboundedSender<Message>,
     size: TermSize,
-    peer_addr: SocketAddr,
 }
 
 impl ClientInfo {
-    pub fn new(
-        token: u64,
-        tx: mpsc::UnboundedSender<Message>,
-        size: TermSize,
-        peer_addr: SocketAddr,
-    ) -> Self {
-        Self {
-            token,
-            tx,
-            size,
-            peer_addr,
-        }
+    pub fn new(token: u64, size: TermSize) -> Self {
+        Self { token, size }
     }
 
     pub fn token(&self) -> u64 {
@@ -42,10 +29,6 @@ impl ClientInfo {
 
     pub fn set_size(&mut self, size: TermSize) {
         self.size = size;
-    }
-
-    pub fn peer_addr(&self) -> SocketAddr {
-        self.peer_addr
     }
 }
 
@@ -117,6 +100,33 @@ impl CommandSpec {
     }
 }
 
-pub(crate) fn path_text(path: Option<&Path>) -> Option<String> {
+#[derive(Clone, Debug)]
+pub struct SessionSummary {
+    pub pty: String,
+    pub command: Vec<String>,
+    pub controller: Option<String>,
+    pub cols: u16,
+    pub rows: u16,
+    pub process_id: Option<u32>,
+    pub created_at: u64,
+    pub clients: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SessionDetail {
+    pub pty: String,
+    pub command: Vec<String>,
+    pub cwd: Option<String>,
+    pub env: BTreeMap<String, String>,
+    pub process_id: Option<u32>,
+    pub created_at: u64,
+    pub controller: Option<String>,
+    pub cols: u16,
+    pub rows: u16,
+    pub clients: Vec<String>,
+    pub exit_code: Option<u32>,
+}
+
+pub fn path_text(path: Option<&Path>) -> Option<String> {
     path.map(|path| path.to_string_lossy().into_owned())
 }

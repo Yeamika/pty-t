@@ -25,16 +25,27 @@ pub async fn detail(url: &str, pty: String) -> Result<()> {
     }
 }
 
-pub async fn create(
-    url: &str,
-    pty: String,
-    program: String,
-    args: Vec<String>,
-    cwd: Option<String>,
-    env: BTreeMap<String, String>,
-    cols: Option<u16>,
-    rows: Option<u16>,
-) -> Result<()> {
+pub struct CreateOptions {
+    pub pty: String,
+    pub program: String,
+    pub args: Vec<String>,
+    pub cwd: Option<String>,
+    pub env: BTreeMap<String, String>,
+    pub cols: Option<u16>,
+    pub rows: Option<u16>,
+}
+
+pub async fn create(url: &str, options: CreateOptions) -> Result<()> {
+    let CreateOptions {
+        pty,
+        program,
+        args,
+        cwd,
+        env,
+        cols,
+        rows,
+    } = options;
+
     let request = AdminText::Create {
         pty,
         program,

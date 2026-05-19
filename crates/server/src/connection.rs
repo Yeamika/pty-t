@@ -1,38 +1,229 @@
 use anyhow::{anyhow, Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use pty_t_demo::protocol::{AdminText, ClientText, ServerText};
-use pty_t_server::session::CommandSpec;
-use pty_t_server::state::ServerState;
+use pty_t_core::session::CommandSpec;
+use pty_t_core::state::ServerState;
+use pty_t_demo::protocol::{
+    AdminText, ClientSummary, ClientText, ServerText, SessionDetail, SessionSummary,
+};
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 
-pub fn start_listener(addr: String, state: Arc<ServerState>) -> Result<String> {
+pub struct ServerRuntime {
+    core: Arc<ServerState>,
+    remote_create_enabled: AtomicBool,
+    listeners: Mutex<Vec<String>>,
+    clients: Mutex<HashMap<String, HashMap<String, ConnectedClient>>>,
+}
+
+struct ConnectedClient {
+    token: u64,
+    tx: mpsc::UnboundedSender<Message>,
+    peer_addr: SocketAddr,
+}
+
+impl ServerRuntime {
+    pub fn new(core: Arc<ServerState>) -> Self {
+        Self {
+            core,
+            remote_create_enabled: AtomicBool::new(false),
+            listeners: Mutex::new(Vec::new()),
+            clients: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn core(&self) -> Arc<ServerState> {
+        self.core.clone()
+    }
+
+    pub fn remote_create_enabled(&self) -> bool {
+        self.remote_create_enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn set_remote_create_enabled(&self, enabled: bool) {
+        self.remote_create_enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn add_listener(&self, addr: String) {
+        self.listeners.lock().unwrap().push(addr);
+    }
+
+    pub fn listeners(&self) -> Vec<String> {
+        self.listeners.lock().unwrap().clone()
+    }
+
+    fn register_client(
+        &self,
+        pty: &str,
+        id: String,
+        token: u64,
+        tx: mpsc::UnboundedSender<Message>,
+        peer_addr: SocketAddr,
+    ) {
+        let mut clients = self.clients.lock().unwrap();
+        clients.entry(pty.to_string()).or_default().insert(
+            id,
+            ConnectedClient {
+                token,
+                tx,
+                peer_addr,
+            },
+        );
+    }
+
+    fn remove_client(&self, pty: &str, id: &str, token: u64) {
+        let mut clients = self.clients.lock().unwrap();
+        let Some(session_clients) = clients.get_mut(pty) else {
+            return;
+        };
+        if session_clients.get(id).map(|client| client.token) == Some(token) {
+            session_clients.remove(id);
+        }
+        if session_clients.is_empty() {
+            clients.remove(pty);
+        }
+    }
+
+    pub fn close_pty_clients(&self, pty: &str) {
+        let clients = self.clients.lock().unwrap().remove(pty);
+        if let Some(clients) = clients {
+            for client in clients.into_values() {
+                let _ = client.tx.send(Message::Close(None));
+            }
+        }
+    }
+
+    fn client_details(&self, pty: &str) -> Vec<ClientSummary> {
+        let clients = self.clients.lock().unwrap();
+        let Some(session_clients) = clients.get(pty) else {
+            return Vec::new();
+        };
+
+        let mut client_details = session_clients
+            .iter()
+            .map(|(id, client)| ClientSummary {
+                id: id.clone(),
+                peer_addr: client.peer_addr.to_string(),
+            })
+            .collect::<Vec<_>>();
+        client_details.sort_by(|a, b| a.id.cmp(&b.id));
+        client_details
+    }
+
+    pub fn summaries(&self) -> Vec<SessionSummary> {
+        self.core
+            .summaries()
+            .into_iter()
+            .map(|summary| self.attach_client_details(summary))
+            .collect()
+    }
+
+    pub fn detail(&self, pty: &str) -> Result<SessionDetail> {
+        let detail = self.core.detail(pty)?;
+        Ok(self.attach_client_details_to_detail(detail))
+    }
+
+    fn attach_client_details(&self, summary: pty_t_core::SessionSummary) -> SessionSummary {
+        let client_details = self.client_details(&summary.pty);
+        SessionSummary {
+            pty: summary.pty,
+            command: summary.command,
+            controller: summary.controller,
+            cols: summary.cols,
+            rows: summary.rows,
+            process_id: summary.process_id,
+            created_at: summary.created_at,
+            clients: summary.clients,
+            client_details,
+        }
+    }
+
+    fn attach_client_details_to_detail(&self, detail: pty_t_core::SessionDetail) -> SessionDetail {
+        let client_details = self.client_details(&detail.pty);
+        SessionDetail {
+            pty: detail.pty,
+            command: detail.command,
+            cwd: detail.cwd,
+            env: detail.env,
+            process_id: detail.process_id,
+            created_at: detail.created_at,
+            controller: detail.controller,
+            cols: detail.cols,
+            rows: detail.rows,
+            clients: detail.clients,
+            client_details,
+            exit_code: detail.exit_code,
+        }
+    }
+
+    pub fn broadcast_meta(&self, pty: &str) {
+        let Some(session) = self.core.session(pty) else {
+            return;
+        };
+        let summary = session.summary();
+        let controller = summary.controller;
+        let clients = {
+            let clients = self.clients.lock().unwrap();
+            clients
+                .get(pty)
+                .map(|clients| {
+                    clients
+                        .iter()
+                        .map(|(id, client)| (id.clone(), client.tx.clone()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+
+        for (id, tx) in clients {
+            let role = if controller.as_deref() == Some(id.as_str()) {
+                "Controller"
+            } else {
+                "Viewer"
+            };
+            let msg = ServerText::Meta {
+                id: id.clone(),
+                pty: summary.pty.clone(),
+                role: role.to_string(),
+                cols: summary.cols,
+                rows: summary.rows,
+            };
+
+            if let Ok(text) = serde_json::to_string(&msg) {
+                let _ = tx.send(Message::Text(text.into()));
+            }
+        }
+    }
+}
+
+pub fn start_listener(addr: String, runtime: Arc<ServerRuntime>) -> Result<String> {
     let std_listener =
         std::net::TcpListener::bind(&addr).with_context(|| format!("bind {addr}"))?;
     std_listener.set_nonblocking(true)?;
     let listener = TcpListener::from_std(std_listener)?;
     let actual_addr = listener.local_addr()?.to_string();
-    state.add_listener(actual_addr.clone());
+    runtime.add_listener(actual_addr.clone());
     println!("websocket listening on ws://{actual_addr}");
 
     tokio::spawn(async move {
-        accept_loop(listener, state).await;
+        accept_loop(listener, runtime).await;
     });
 
     Ok(actual_addr)
 }
 
-async fn accept_loop(listener: TcpListener, state: Arc<ServerState>) {
+async fn accept_loop(listener: TcpListener, runtime: Arc<ServerRuntime>) {
     loop {
         match listener.accept().await {
             Ok((stream, peer_addr)) => {
-                let state = state.clone();
+                let runtime = runtime.clone();
                 tokio::spawn(async move {
-                    if let Err(err) = handle_connection(stream, peer_addr, state).await {
+                    if let Err(err) = handle_connection(stream, peer_addr, runtime).await {
                         eprintln!("connection error: {err:#}");
                     }
                 });
@@ -48,7 +239,7 @@ async fn accept_loop(listener: TcpListener, state: Arc<ServerState>) {
 pub async fn handle_connection(
     stream: TcpStream,
     peer_addr: SocketAddr,
-    state: Arc<ServerState>,
+    runtime: Arc<ServerRuntime>,
 ) -> Result<()> {
     let ws = accept_async(stream).await?;
     let (mut ws_write, mut ws_read) = ws.split();
@@ -68,14 +259,14 @@ pub async fn handle_connection(
     }) = serde_json::from_str::<ClientText>(&first_text)
     else {
         let admin = serde_json::from_str::<AdminText>(&first_text)?;
-        let response = handle_admin_command(state.clone(), admin).await;
+        let response = handle_admin_command(runtime.clone(), admin).await;
         send_admin_response(&mut ws_write, response).await?;
 
         while let Some(msg) = ws_read.next().await {
             match msg? {
                 Message::Text(text) => {
                     let response = match serde_json::from_str::<AdminText>(&text) {
-                        Ok(admin) => handle_admin_command(state.clone(), admin).await,
+                        Ok(admin) => handle_admin_command(runtime.clone(), admin).await,
                         Err(err) => Err(anyhow!("bad admin message: {err}")),
                     };
                     send_admin_response(&mut ws_write, response).await?;
@@ -89,7 +280,7 @@ pub async fn handle_connection(
         return Ok(());
     };
 
-    let Some(session) = state.session(&pty) else {
+    let Some(session) = runtime.core().session(&pty) else {
         send_admin_response(
             &mut ws_write,
             Ok(ServerText::Error {
@@ -99,8 +290,9 @@ pub async fn handle_connection(
         .await?;
         return Ok(());
     };
-    let token = state.next_token();
+    let token = runtime.core().next_token();
     let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
+    let output_rx = session.subscribe_live_output();
 
     let writer_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
@@ -111,14 +303,23 @@ pub async fn handle_connection(
     });
 
     let requested_id = id;
-    let id = session.register_client(
-        requested_id.clone(),
-        token,
-        tx.clone(),
-        peer_addr,
-        cols,
-        rows,
-    )?;
+    let id = session.register_client(requested_id.clone(), token, cols, rows)?;
+    runtime.register_client(&pty, id.clone(), token, tx.clone(), peer_addr);
+
+    let snapshot = session.snapshot_formatted();
+    let _ = tx.send(Message::Binary(snapshot.into()));
+    runtime.broadcast_meta(&pty);
+
+    let output_tx = tx.clone();
+    let output_task = tokio::spawn(async move {
+        let mut output_rx = output_rx;
+        while let Some(data) = output_rx.recv().await {
+            if output_tx.send(Message::Binary(data.into())).is_err() {
+                break;
+            }
+        }
+    });
+
     if id == requested_id {
         println!("client {id} from {peer_addr} joined pty {pty}");
     } else {
@@ -139,9 +340,19 @@ pub async fn handle_connection(
             Message::Binary(data) => session.write_from_client(&id, token, &data),
             Message::Text(text) => match serde_json::from_str::<ClientText>(&text) {
                 Ok(ClientText::Resize { cols, rows }) => {
-                    session.set_client_size(&id, token, cols, rows)
+                    let result = session.set_client_size(&id, token, cols, rows);
+                    if result.is_ok() {
+                        runtime.broadcast_meta(&pty);
+                    }
+                    result
                 }
-                Ok(ClientText::RequestControl) => session.set_controller(&id),
+                Ok(ClientText::RequestControl) => {
+                    let result = session.set_controller(&id);
+                    if result.is_ok() {
+                        runtime.broadcast_meta(&pty);
+                    }
+                    result
+                }
                 Ok(ClientText::Hello { .. }) => Ok(()),
                 Err(err) => {
                     let msg = ServerText::Error {
@@ -167,7 +378,12 @@ pub async fn handle_connection(
     }
 
     session.unregister_client(&id, token);
+    runtime.remove_client(&pty, &id, token);
+    runtime.broadcast_meta(&pty);
     writer_task.abort();
+    output_task.abort();
+    let _ = writer_task.await;
+    let _ = output_task.await;
     println!("client {id} left pty {pty}");
     result
 }
@@ -191,7 +407,7 @@ async fn send_admin_response(
     Ok(())
 }
 
-async fn handle_admin_command(state: Arc<ServerState>, msg: AdminText) -> Result<ServerText> {
+async fn handle_admin_command(runtime: Arc<ServerRuntime>, msg: AdminText) -> Result<ServerText> {
     match msg {
         AdminText::Create {
             pty,
@@ -202,7 +418,7 @@ async fn handle_admin_command(state: Arc<ServerState>, msg: AdminText) -> Result
             cols,
             rows,
         } => {
-            if !state.remote_create_enabled() {
+            if !runtime.remote_create_enabled() {
                 return Err(anyhow!(
                     "remote create is disabled; run `remote-create on` in ptytd to enable it"
                 ));
@@ -215,37 +431,44 @@ async fn handle_admin_command(state: Arc<ServerState>, msg: AdminText) -> Result
                 command = command.cwd(cwd);
             }
             let argv = command.argv().join(" ");
-            state.create_session(pty.clone(), command, cols, rows)?;
+            runtime
+                .core()
+                .create_session(pty.clone(), command, cols, rows)?;
             Ok(ServerText::Info {
                 message: format!("created pty {pty}: {argv}"),
             })
         }
         AdminText::List => Ok(ServerText::Sessions {
-            sessions: state.summaries(),
+            sessions: runtime.summaries(),
         }),
         AdminText::Detail { pty } => Ok(ServerText::Session {
-            session: state.detail(&pty)?,
+            session: runtime.detail(&pty)?,
         }),
         AdminText::Control { pty, id } => {
-            let session = state
+            let session = runtime
+                .core()
                 .session(&pty)
                 .ok_or_else(|| anyhow!("pty {pty} does not exist"))?;
             session.set_controller(&id)?;
+            runtime.broadcast_meta(&pty);
             Ok(ServerText::Info {
                 message: format!("controller for {pty} is now {id}"),
             })
         }
         AdminText::ResizePty { pty, cols, rows } => {
-            let session = state
+            let session = runtime
+                .core()
                 .session(&pty)
                 .ok_or_else(|| anyhow!("pty {pty} does not exist"))?;
             session.resize(cols, rows)?;
+            runtime.broadcast_meta(&pty);
             Ok(ServerText::Info {
                 message: format!("resized {pty} to {cols}x{rows}"),
             })
         }
         AdminText::Send { pty, data } => {
-            let session = state
+            let session = runtime
+                .core()
                 .session(&pty)
                 .ok_or_else(|| anyhow!("pty {pty} does not exist"))?;
             session.write_from_server(data.as_bytes())?;
@@ -254,16 +477,18 @@ async fn handle_admin_command(state: Arc<ServerState>, msg: AdminText) -> Result
             })
         }
         AdminText::Kill { pty } => {
-            let session = state
+            let session = runtime
+                .core()
                 .remove_session(&pty)
                 .ok_or_else(|| anyhow!("pty {pty} does not exist"))?;
             session.kill()?;
+            runtime.close_pty_clients(&pty);
             Ok(ServerText::Info {
                 message: format!("killed {pty}"),
             })
         }
         AdminText::Listen { addr } => {
-            let actual = start_listener(addr.clone(), state)?;
+            let actual = start_listener(addr.clone(), runtime)?;
             Ok(ServerText::Info {
                 message: format!("listening on ws://{actual}"),
             })

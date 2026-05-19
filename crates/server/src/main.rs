@@ -1,13 +1,10 @@
-mod cli;
-mod connection;
-
 use anyhow::Result;
 use clap::Parser;
-use pty_t_server::session::{CommandSpec, TermSize};
-use pty_t_server::{default_shell, PtyManager};
-
-use crate::cli::{cli_loop, print_help};
-use crate::connection::start_listener;
+use pty_t_core::session::{CommandSpec, TermSize};
+use pty_t_core::{default_shell, PtyManager};
+use pty_t_server::cli::{cli_loop, print_help};
+use pty_t_server::connection::{start_listener, ServerRuntime};
+use std::sync::Arc;
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -38,14 +35,15 @@ async fn main() -> Result<()> {
             rows: args.rows,
         },
     );
-    manager.set_remote_create_enabled(args.remote_create);
 
-    let state = manager.state();
-    let _ = start_listener(args.listen, state.clone())?;
+    let runtime = Arc::new(ServerRuntime::new(manager.state()));
+    runtime.set_remote_create_enabled(args.remote_create);
+
+    let _ = start_listener(args.listen, runtime.clone())?;
     print_help();
 
     tokio::spawn(async move {
-        if let Err(err) = cli_loop(state).await {
+        if let Err(err) = cli_loop(runtime).await {
             eprintln!("cli error: {err:#}");
         }
     });

@@ -1,17 +1,16 @@
-use crate::session::{CommandSpec, Session, TermSize};
+use crate::session::Session;
 use anyhow::{anyhow, Result};
-use pty_t_demo::protocol::{SessionDetail, SessionSummary};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+use crate::{CommandSpec, SessionDetail, SessionSummary, TermSize};
 
 pub struct ServerState {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     next_token: AtomicU64,
     default_command: CommandSpec,
     default_size: TermSize,
-    remote_create_enabled: AtomicBool,
-    listeners: Mutex<Vec<String>>,
 }
 
 impl ServerState {
@@ -21,29 +20,11 @@ impl ServerState {
             next_token: AtomicU64::new(1),
             default_command,
             default_size,
-            remote_create_enabled: AtomicBool::new(false),
-            listeners: Mutex::new(Vec::new()),
         }
     }
 
     pub fn next_token(&self) -> u64 {
         self.next_token.fetch_add(1, Ordering::Relaxed)
-    }
-
-    pub fn add_listener(&self, addr: String) {
-        self.listeners.lock().unwrap().push(addr);
-    }
-
-    pub fn listeners(&self) -> Vec<String> {
-        self.listeners.lock().unwrap().clone()
-    }
-
-    pub fn remote_create_enabled(&self) -> bool {
-        self.remote_create_enabled.load(Ordering::Relaxed)
-    }
-
-    pub fn set_remote_create_enabled(&self, enabled: bool) {
-        self.remote_create_enabled.store(enabled, Ordering::Relaxed);
     }
 
     pub fn get_or_create_session(&self, name: &str, cols: u16, rows: u16) -> Result<Arc<Session>> {

@@ -1,10 +1,11 @@
-use crate::session::{CommandSpec, Session, TermSize};
+use crate::session::Session;
 use crate::state::ServerState;
 use anyhow::Result;
-use pty_t_demo::protocol::{SessionDetail, SessionSummary};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+
+use crate::{CommandSpec, SessionDetail, SessionSummary, TermSize};
 
 #[derive(Clone)]
 pub struct PtyManager {
@@ -52,23 +53,6 @@ impl PtyManager {
         self.state.detail(pty)
     }
 
-    pub fn remote_create_enabled(&self) -> bool {
-        self.state.remote_create_enabled()
-    }
-
-    pub fn set_remote_create_enabled(&self, enabled: bool) {
-        self.state.set_remote_create_enabled(enabled);
-    }
-
-    pub fn set_controller(&self, pty: &str, id: &str) -> Result<()> {
-        self.state.require_session(pty)?.set_controller(id)
-    }
-
-    pub fn force_controller(&self, pty: &str, id: impl Into<String>) -> Result<()> {
-        self.state.require_session(pty)?.force_controller(id);
-        Ok(())
-    }
-
     pub fn resize_pty(&self, pty: &str, cols: u16, rows: u16) -> Result<()> {
         self.state.require_session(pty)?.resize(cols, rows)
     }
@@ -103,10 +87,20 @@ impl PtyManager {
         timeout: Duration,
     ) -> Result<Option<u32>> {
         let session = self.state.require_session(pty)?;
-        let wait = tokio::task::spawn_blocking(move || session.wait_exit_code());
-        match tokio::time::timeout(timeout, wait).await {
-            Ok(result) => Ok(Some(result??)),
-            Err(_) => Ok(None),
+        let deadline = tokio::time::Instant::now() + timeout;
+
+        loop {
+            if let Some(code) = session.try_exit_code()? {
+                return Ok(Some(code));
+            }
+
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return Ok(None);
+            }
+
+            let sleep = (deadline - now).min(Duration::from_millis(20));
+            tokio::time::sleep(sleep).await;
         }
     }
 

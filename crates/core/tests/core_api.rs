@@ -1,8 +1,8 @@
 #[cfg(unix)]
 #[test]
 fn command_spec_sets_cwd_env_and_exposes_exit_code() {
-    use pty_t_server::session::CommandSpec;
-    use pty_t_server::PtyManager;
+    use pty_t_core::session::CommandSpec;
+    use pty_t_core::PtyManager;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -33,4 +33,31 @@ fn command_spec_sets_cwd_env_and_exposes_exit_code() {
 
     assert_eq!(manager.wait_exit_code("main").unwrap(), 7);
     let _ = fs::remove_dir_all(cwd);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn wait_exit_code_timeout_does_not_block_later_kill() {
+    use pty_t_core::session::CommandSpec;
+    use pty_t_core::PtyManager;
+    use std::time::Duration;
+
+    let manager = PtyManager::default_shell(80, 24);
+    manager
+        .create_pty(
+            "main",
+            CommandSpec::new("sh").args(["-lc", "sleep 5"]),
+            None,
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(
+        manager
+            .wait_exit_code_timeout("main", Duration::from_millis(20))
+            .await
+            .unwrap(),
+        None
+    );
+    manager.kill_pty("main").unwrap();
 }
