@@ -88,6 +88,12 @@ impl Session {
                     break;
                 };
                 session.on_pty_output(&buf[..n]);
+                if cfg!(windows)
+                    && session.clients.lock().unwrap().is_empty()
+                    && buf[..n].windows(4).any(|window| window == b"\x1b[6n")
+                {
+                    let _ = session.write_from_server(b"\x1b[1;1R");
+                }
             }
         });
 
