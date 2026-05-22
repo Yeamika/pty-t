@@ -86,6 +86,10 @@ fn output_history_defaults_to_one_mib_and_can_be_limited() {
     assert_eq!(session.output_history_limit(), 4);
     assert_eq!(session.output_history_len(), 4);
     assert!(!manager.snapshot_pty("main").unwrap().is_empty());
+    assert!(manager
+        .snapshot_pty_plain("main")
+        .unwrap()
+        .contains("abcdef"));
 
     session.set_output_history_limit(0);
     assert_eq!(session.output_history_len(), 0);

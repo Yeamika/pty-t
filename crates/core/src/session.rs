@@ -263,6 +263,23 @@ impl Session {
         self.parser.lock().unwrap().screen().state_formatted()
     }
 
+    pub fn snapshot_plain(&self) -> String {
+        let parser = self.parser.lock().unwrap();
+        let screen = parser.screen();
+        let (rows, cols) = screen.size();
+        let mut lines = screen
+            .rows(0, cols)
+            .take(rows as usize)
+            .map(|line| line.trim_end().to_string())
+            .collect::<Vec<_>>();
+
+        while lines.last().is_some_and(|line| line.is_empty()) {
+            lines.pop();
+        }
+
+        lines.join("\n")
+    }
+
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
         let (cols, rows) = clamp_size(cols, rows);
         let size = PtySize {

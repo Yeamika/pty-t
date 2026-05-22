@@ -65,6 +65,10 @@ impl PtyManager {
         Ok(self.state.require_session(pty)?.snapshot_formatted())
     }
 
+    pub fn snapshot_pty_plain(&self, pty: &str) -> Result<String> {
+        Ok(self.state.require_session(pty)?.snapshot_plain())
+    }
+
     pub fn subscribe_output(&self, pty: &str) -> Result<mpsc::UnboundedReceiver<Vec<u8>>> {
         Ok(self.state.require_session(pty)?.subscribe_output())
     }
