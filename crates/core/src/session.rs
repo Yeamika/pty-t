@@ -232,6 +232,16 @@ impl Session {
         Ok(())
     }
 
+    pub fn write_from_controller(&self, id: &str, data: &[u8]) -> Result<bool> {
+        if self.controller_id().as_deref() != Some(id) {
+            return Ok(false);
+        }
+        let mut writer = self.writer.lock().unwrap();
+        writer.write_all(data)?;
+        writer.flush()?;
+        Ok(true)
+    }
+
     pub fn subscribe_output(&self) -> mpsc::UnboundedReceiver<Vec<u8>> {
         self.subscribe_output_inner(true)
     }

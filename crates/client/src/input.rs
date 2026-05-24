@@ -1,5 +1,7 @@
 use super::LocalEvent;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+};
 use std::thread;
 use tokio::sync::mpsc;
 
@@ -19,6 +21,11 @@ pub fn spawn_input_thread(tx: mpsc::UnboundedSender<LocalEvent>) {
                 }
                 Event::Resize(cols, rows) => {
                     let _ = tx.send(LocalEvent::Resize { cols, rows });
+                }
+                Event::Mouse(mouse)
+                    if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) =>
+                {
+                    let _ = tx.send(LocalEvent::Mouse(mouse));
                 }
                 _ => {}
             }

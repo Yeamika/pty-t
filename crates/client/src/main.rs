@@ -5,9 +5,9 @@ mod render;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyEvent, MouseEvent};
 use crossterm::terminal;
-use crossterm::{cursor, execute};
+use crossterm::{cursor, event, execute};
 use futures_util::{SinkExt, StreamExt};
 use input::spawn_input_thread;
 use keys::process_key;
@@ -70,6 +70,7 @@ enum Command {
 
 pub(crate) enum LocalEvent {
     Key(KeyEvent),
+    Mouse(MouseEvent),
     Resize { cols: u16, rows: u16 },
     Quit,
 }
@@ -206,14 +207,24 @@ struct TerminalGuard;
 impl TerminalGuard {
     fn enter() -> Result<Self> {
         terminal::enable_raw_mode()?;
-        execute!(stdout(), terminal::EnterAlternateScreen, cursor::Hide)?;
+        execute!(
+            stdout(),
+            terminal::EnterAlternateScreen,
+            event::EnableMouseCapture,
+            cursor::Hide
+        )?;
         Ok(Self)
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = execute!(stdout(), cursor::Show, terminal::LeaveAlternateScreen);
+        let _ = execute!(
+            stdout(),
+            cursor::Show,
+            event::DisableMouseCapture,
+            terminal::LeaveAlternateScreen
+        );
         let _ = terminal::disable_raw_mode();
     }
 }
@@ -369,6 +380,13 @@ async fn run_terminal_with_size(options: TerminalOptions, size: TerminalSize) ->
                             break;
                         }
                     }
+                    LocalEvent::Mouse(mouse) => {
+                        if should_request_control(&view, mouse) {
+                            let msg = serde_json::to_string(&ClientText::RequestControl)?;
+                            metrics.record_tx(msg.len());
+                            ws_write.send(Message::Text(msg.into())).await?;
+                        }
+                    }
                     LocalEvent::Resize { cols, rows } => {
                         view.local_cols = cols;
                         view.local_rows = rows;
@@ -437,6 +455,32 @@ async fn run_terminal_with_size(options: TerminalOptions, size: TerminalSize) ->
     }
 
     Ok(())
+}
+
+fn should_request_control(view: &ViewState, mouse: MouseEvent) -> bool {
+    if !matches!(
+        mouse.kind,
+        event::MouseEventKind::Down(event::MouseButton::Left)
+    ) {
+        return false;
+    }
+    if mouse.row != view.local_rows.saturating_sub(1) {
+        return false;
+    }
+
+    let start = role_label_start(view);
+    let label_len = format!("[{}:{}]", view.role, view.id).chars().count() as u16;
+    mouse.column >= start && mouse.column < start.saturating_add(label_len)
+}
+
+fn role_label_start(view: &ViewState) -> u16 {
+    match view.focus {
+        FocusMode::Input => match view.status_view {
+            StatusView::Normal => "[INPUT] ".len() as u16,
+            StatusView::Link => "[LINK] ".len() as u16,
+        },
+        FocusMode::Command => "[Command] ".len() as u16,
+    }
 }
 
 fn resolve_terminal_size(cols: Option<u16>, rows: Option<u16>) -> Result<TerminalSize> {

@@ -96,3 +96,39 @@ fn output_history_defaults_to_one_mib_and_can_be_limited() {
 
     manager.kill_pty("main").unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn write_from_controller_only_writes_for_current_controller() {
+    use pty_t_core::session::CommandSpec;
+    use pty_t_core::PtyManager;
+
+    let manager = PtyManager::default_shell(80, 24);
+    let session = manager
+        .create_pty(
+            "main",
+            CommandSpec::new("sh").args(["-lc", "cat"]),
+            None,
+            None,
+        )
+        .unwrap();
+
+    let client = session
+        .register_client("ptyt".to_string(), 1, 80, 24)
+        .unwrap();
+    assert_eq!(client, "ptyt");
+    assert_eq!(session.controller_id().as_deref(), Some(client.as_str()));
+
+    session.force_controller("rec:main");
+    assert!(!session.write_from_controller("ptyt", b"ignored\n").unwrap());
+    assert!(session
+        .write_from_controller("rec:main", b"accepted\n")
+        .unwrap());
+
+    session.set_controller(&client).unwrap();
+    assert!(!session
+        .write_from_controller("rec:main", b"lost\n")
+        .unwrap());
+
+    manager.kill_pty("main").unwrap();
+}
