@@ -5,10 +5,11 @@ use pty_t_core::state::ServerState;
 use pty_t_protocol::{
     AdminText, ClientSummary, ClientText, ServerText, SessionDetail, SessionSummary,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio_tungstenite::accept_async;
@@ -19,6 +20,7 @@ pub struct ServerRuntime {
     remote_create_enabled: AtomicBool,
     listeners: Mutex<Vec<String>>,
     clients: Mutex<HashMap<String, HashMap<String, ConnectedClient>>>,
+    exit_watchers: Mutex<HashSet<String>>,
 }
 
 struct ConnectedClient {
@@ -34,6 +36,7 @@ impl ServerRuntime {
             remote_create_enabled: AtomicBool::new(false),
             listeners: Mutex::new(Vec::new()),
             clients: Mutex::new(HashMap::new()),
+            exit_watchers: Mutex::new(HashSet::new()),
         }
     }
 
@@ -138,6 +141,7 @@ impl ServerRuntime {
             rows: summary.rows,
             process_id: summary.process_id,
             created_at: summary.created_at,
+            exit_code: summary.exit_code,
             output_history_bytes: summary.output_history_bytes,
             output_history_limit: summary.output_history_limit,
             clients: summary.clients,
@@ -157,11 +161,11 @@ impl ServerRuntime {
             controller: detail.controller,
             cols: detail.cols,
             rows: detail.rows,
+            exit_code: detail.exit_code,
             output_history_bytes: detail.output_history_bytes,
             output_history_limit: detail.output_history_limit,
             clients: detail.clients,
             client_details,
-            exit_code: detail.exit_code,
         }
     }
 
@@ -196,12 +200,45 @@ impl ServerRuntime {
                 role: role.to_string(),
                 cols: summary.cols,
                 rows: summary.rows,
+                exit_code: summary.exit_code,
             };
 
             if let Ok(text) = serde_json::to_string(&msg) {
                 let _ = tx.send(Message::Text(text.into()));
             }
         }
+    }
+
+    pub fn start_exit_watcher(self: &Arc<Self>, pty: &str) {
+        {
+            let mut exit_watchers = self.exit_watchers.lock().unwrap();
+            if !exit_watchers.insert(pty.to_string()) {
+                return;
+            }
+        }
+
+        let pty = pty.to_string();
+        let runtime = self.clone();
+        tokio::spawn(async move {
+            loop {
+                let Some(session) = runtime.core.session(&pty) else {
+                    break;
+                };
+                match session.try_exit_code() {
+                    Ok(Some(_)) => {
+                        runtime.broadcast_meta(&pty);
+                        break;
+                    }
+                    Ok(None) => tokio::time::sleep(Duration::from_millis(100)).await,
+                    Err(err) => {
+                        eprintln!("exit watcher error for {pty}: {err:#}");
+                        break;
+                    }
+                }
+            }
+
+            runtime.exit_watchers.lock().unwrap().remove(&pty);
+        });
     }
 }
 
@@ -309,6 +346,7 @@ pub async fn handle_connection(
     let requested_id = id;
     let id = session.register_client(requested_id.clone(), token, cols, rows)?;
     runtime.register_client(&pty, id.clone(), token, tx.clone(), peer_addr);
+    runtime.start_exit_watcher(&pty);
 
     let snapshot = session.snapshot_formatted();
     let _ = tx.send(Message::Binary(snapshot.into()));

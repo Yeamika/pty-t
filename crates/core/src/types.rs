@@ -110,6 +110,7 @@ pub struct SessionSummary {
     pub rows: u16,
     pub process_id: Option<u32>,
     pub created_at: u64,
+    pub exit_code: Option<u32>,
     pub output_history_bytes: usize,
     pub output_history_limit: usize,
     pub clients: Vec<String>,

@@ -21,6 +21,7 @@ pub struct Session {
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
+    exit_code: Mutex<Option<u32>>,
     clients: Mutex<HashMap<String, ClientInfo>>,
     controller: Mutex<Option<String>>,
     parser: Mutex<vt100::Parser>,
@@ -63,6 +64,7 @@ impl Session {
             master: Mutex::new(pair.master),
             writer: Mutex::new(writer),
             child: Mutex::new(child),
+            exit_code: Mutex::new(None),
             clients: Mutex::new(HashMap::new()),
             controller: Mutex::new(None),
             parser: Mutex::new(vt100::Parser::new(rows, cols, 2000)),
@@ -325,16 +327,26 @@ impl Session {
     }
 
     pub fn try_exit_code(&self) -> Result<Option<u32>> {
-        Ok(self
-            .child
-            .lock()
-            .unwrap()
-            .try_wait()?
-            .map(|status| status.exit_code()))
+        if let Some(code) = *self.exit_code.lock().unwrap() {
+            return Ok(Some(code));
+        }
+
+        let Some(status) = self.child.lock().unwrap().try_wait()? else {
+            return Ok(None);
+        };
+        let code = status.exit_code();
+        *self.exit_code.lock().unwrap() = Some(code);
+        Ok(Some(code))
     }
 
     pub fn wait_exit_code(&self) -> Result<u32> {
-        Ok(self.child.lock().unwrap().wait()?.exit_code())
+        if let Some(code) = *self.exit_code.lock().unwrap() {
+            return Ok(code);
+        }
+
+        let code = self.child.lock().unwrap().wait()?.exit_code();
+        *self.exit_code.lock().unwrap() = Some(code);
+        Ok(code)
     }
 
     pub fn summary(&self) -> SessionSummary {
@@ -351,6 +363,7 @@ impl Session {
             rows: size.rows,
             process_id: self.process_id(),
             created_at: self.created_at,
+            exit_code: self.try_exit_code().ok().flatten(),
             output_history_bytes: self.output_history_len(),
             output_history_limit: self.output_history_limit(),
             clients: ids,
@@ -372,7 +385,7 @@ impl Session {
             output_history_bytes: summary.output_history_bytes,
             output_history_limit: summary.output_history_limit,
             clients: summary.clients,
-            exit_code: self.try_exit_code().ok().flatten(),
+            exit_code: summary.exit_code,
         }
     }
 

@@ -121,14 +121,15 @@ fn print_sessions(sessions: &[SessionSummary]) -> Result<()> {
     }
 
     println!(
-        "{:<20} {:>8} {:>10} {:>9} {:>15} {:>12}  COMMAND",
-        "PTY", "PID", "SIZE", "CLIENTS", "HISTORY", "CREATED"
+        "{:<20} {:>8} {:>9} {:>10} {:>9} {:>15} {:>12}  COMMAND",
+        "PTY", "PID", "STATUS", "SIZE", "CLIENTS", "HISTORY", "CREATED"
     );
     for session in sessions {
         println!(
-            "{:<20} {:>8} {:>10} {:>9} {:>15} {:>12}  {}",
+            "{:<20} {:>8} {:>9} {:>10} {:>9} {:>15} {:>12}  {}",
             session.pty,
             opt_u32(session.process_id),
+            crate::state_text(session.exit_code),
             format!("{}x{}", session.cols, session.rows),
             session.clients.len(),
             format!(
@@ -149,6 +150,7 @@ fn print_detail(session: &SessionDetail) {
     println!("cwd: {}", session.cwd.as_deref().unwrap_or("-"));
     println!("created: {}", time_text(session.created_at));
     println!("size: {}x{}", session.cols, session.rows);
+    println!("state: {}", crate::state_text(session.exit_code));
     println!(
         "history: {}/{} bytes",
         session.output_history_bytes, session.output_history_limit

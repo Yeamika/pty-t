@@ -1,4 +1,4 @@
-use super::{CommandSelection, FocusMode, Metrics, StatusView, ViewState};
+use super::{state_text, CommandSelection, FocusMode, Metrics, StatusView, ViewState};
 use anyhow::Result;
 use crossterm::cursor;
 use crossterm::queue;
@@ -96,9 +96,10 @@ fn draw_status(
                 write_status_text(
                     out,
                     view,
-                    &format!(
-                        "[INPUT] [{}:{}] [{}x{}] pty={}",
-                        view.role, view.id, view.pty_cols, view.pty_rows, view.pty
+                    &format_status_line(
+                        ">",
+                        view,
+                        &format!("{} {}", state_text(view.exit_code), view.pty),
                     ),
                 )?;
                 None
@@ -107,15 +108,18 @@ fn draw_status(
                 write_status_text(
                     out,
                     view,
-                    &format!(
-                        "[LINK] [{}:{}] rtt={} rx={} tx={} idle={} pty={}",
-                        view.role,
-                        view.id,
-                        metrics.latency_text(),
-                        format_bytes(metrics.rx_bytes),
-                        format_bytes(metrics.tx_bytes),
-                        metrics.idle_text(),
-                        view.pty
+                    &format_status_line(
+                        "~",
+                        view,
+                        &format!(
+                            "rtt={} rx={} tx={} idle={} {} {}",
+                            metrics.latency_text(),
+                            format_bytes(metrics.rx_bytes),
+                            format_bytes(metrics.tx_bytes),
+                            metrics.idle_text(),
+                            state_text(view.exit_code),
+                            view.pty
+                        ),
                     ),
                 )?;
                 None
@@ -136,27 +140,60 @@ fn write_status_text(out: &mut Stdout, view: &ViewState, text: &str) -> Result<(
 
 fn draw_command_status(out: &mut Stdout, view: &ViewState) -> Result<(u16, u16)> {
     let command_x = 0;
-    write_status_segment(
-        out,
-        "[Command]",
-        view.command_selection == CommandSelection::Mode,
-    )?;
+    write_status_segment(out, "[:]", view.command_selection == CommandSelection::Mode)?;
     write!(out, " ")?;
     write_status_segment(
         out,
-        &format!("[{}:{}]", view.role, view.id),
+        &role_label(view.role.as_str(), view.id.as_str()),
         view.command_selection == CommandSelection::Identity,
     )?;
-    write!(
-        out,
-        " [{}x{}] pty={}",
-        view.pty_cols, view.pty_rows, view.pty
-    )?;
+    write!(out, " {} {}", state_text(view.exit_code), view.pty)?;
+    write_right_size(out, view)?;
     let cursor_x = match view.command_selection {
         CommandSelection::Mode => command_x,
-        CommandSelection::Identity => command_x + "[Command] ".len() as u16,
+        CommandSelection::Identity => command_x + "[:] ".len() as u16,
     };
     Ok((cursor_x, view.local_rows.saturating_sub(1)))
+}
+
+fn format_status_line(mode: &str, view: &ViewState, body: &str) -> String {
+    let left = format!("[{mode}] {} {body}", role_label(&view.role, &view.id));
+    let size = size_label(view);
+    let width = view.local_cols as usize;
+    let left_len = left.chars().count();
+    let size_len = size.chars().count();
+
+    if left_len + 1 + size_len > width {
+        left
+    } else {
+        format!("{left}{:>pad$}", size, pad = width - left_len)
+    }
+}
+
+pub(crate) fn role_label(role: &str, id: &str) -> String {
+    let symbol = if role == "Controller" { "◆" } else { "◇" };
+    format!("[{symbol}:{id}]")
+}
+
+pub(crate) fn size_label(view: &ViewState) -> String {
+    format!("[{}x{}]", view.pty_cols, view.pty_rows)
+}
+
+fn write_right_size(out: &mut Stdout, view: &ViewState) -> Result<()> {
+    let size = size_label(view);
+    let size_len = size.chars().count() as u16;
+    if size_len >= view.local_cols {
+        return Ok(());
+    }
+    queue!(
+        out,
+        cursor::MoveTo(
+            view.local_cols - size_len,
+            view.local_rows.saturating_sub(1)
+        )
+    )?;
+    write!(out, "{size}")?;
+    Ok(())
 }
 
 fn write_status_segment(out: &mut Stdout, text: &str, selected: bool) -> Result<()> {

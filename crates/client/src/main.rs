@@ -99,6 +99,7 @@ pub(crate) struct ViewState {
     pub(crate) role: String,
     pub(crate) pty_cols: u16,
     pub(crate) pty_rows: u16,
+    pub(crate) exit_code: Option<u32>,
     pub(crate) local_cols: u16,
     pub(crate) local_rows: u16,
     pub(crate) focus: FocusMode,
@@ -350,6 +351,7 @@ async fn run_terminal_with_size(options: TerminalOptions, size: TerminalSize) ->
         role: "Viewer".to_string(),
         pty_cols: desired_cols,
         pty_rows: desired_rows,
+        exit_code: None,
         local_cols,
         local_rows,
         focus: FocusMode::Input,
@@ -420,12 +422,13 @@ async fn run_terminal_with_size(options: TerminalOptions, size: TerminalSize) ->
                     Message::Text(text) => {
                         metrics.record_rx(text.len(), false);
                         match serde_json::from_str::<ServerText>(&text) {
-                            Ok(ServerText::Meta { id, pty, role, cols, rows }) => {
+                            Ok(ServerText::Meta { id, pty, role, cols, rows, exit_code }) => {
                                 view.id = id;
                                 view.pty = pty;
                                 view.role = role;
                                 view.pty_cols = cols;
                                 view.pty_rows = rows;
+                                view.exit_code = exit_code;
                                 parser.screen_mut().set_size(rows, cols);
                                 render(&mut out, &parser, &view, &metrics)?;
                             }
@@ -476,10 +479,18 @@ fn should_request_control(view: &ViewState, mouse: MouseEvent) -> bool {
 fn role_label_start(view: &ViewState) -> u16 {
     match view.focus {
         FocusMode::Input => match view.status_view {
-            StatusView::Normal => "[INPUT] ".len() as u16,
-            StatusView::Link => "[LINK] ".len() as u16,
+            StatusView::Normal => "[>] ".len() as u16,
+            StatusView::Link => "[~] ".len() as u16,
         },
-        FocusMode::Command => "[Command] ".len() as u16,
+        FocusMode::Command => "[:] ".len() as u16,
+    }
+}
+
+pub(crate) fn state_text(exit_code: Option<u32>) -> String {
+    match exit_code {
+        None => "[▶]".to_string(),
+        Some(0) => "[✓]".to_string(),
+        Some(code) => format!("[E:{code}]"),
     }
 }
 

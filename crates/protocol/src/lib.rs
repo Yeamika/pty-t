@@ -79,6 +79,8 @@ pub struct SessionSummary {
     #[serde(default)]
     pub created_at: u64,
     #[serde(default)]
+    pub exit_code: Option<u32>,
+    #[serde(default)]
     pub output_history_bytes: usize,
     #[serde(default)]
     pub output_history_limit: usize,
@@ -115,6 +117,8 @@ pub enum ServerText {
         role: String,
         cols: u16,
         rows: u16,
+        #[serde(default)]
+        exit_code: Option<u32>,
     },
     Error {
         message: String,
